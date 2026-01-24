@@ -2,11 +2,11 @@
 开发中...
 目标：
 1. 打通连续的 pick & place 的流程：已完成
-2. 取消一次任务后回到初始位置的问题
-2. eef 轨迹点可视化，使用 er1.5 打出轨迹，并可视化轨迹
+2. 取消一次任务后回到初始位置的问题：已完成
+2. eef 轨迹点可视化，直接将过程中设定好的点显示出来即可
 3. 邻域内深度检测，选取最优 pick 点，当前认为 depth 最小的就是最优 pick 点
-4. 接入 grasp_net
-5. ...
+4. 接入 grasp_net,moveit
+5. 验证action是阻塞式还是非阻塞式
 """
 
 from tvla_realenv.open3d_realsense_env import Open3dRealsenseEnv
@@ -28,19 +28,20 @@ from pointing_vllm_get_point_utils_developing import (
 # ===============================
 # 定义每个物体的 pick & place 高度
 safe_height = 0.06
-h_Parameters = {
+h_Parameters_list = {
     "yellow ball": {"pick_down": -0.06, "place_down": 0.06},
-    "white can": {"pick_down": -0.02, "place_down": 0.06},
+    #"white can": {"pick_down": -0.02, "place_down": 0.06},
+    "white can": {"pick_down": 0.00, "place_down": 0.00},
     "rubik's cube": {"pick_down": 0.01, "place_down": 0.07},
     "glue stick": {"pick_down": -0.02, "place_down": 0.07},
     # 可以继续添加其他物体
 }
 
 def get_h_Parameters_for_object(obj_name):
-    return h_Parameters.get(obj_name, {"pick_down": 0.00, "place_down": 0.04})
+    return h_Parameters_list.get(obj_name, {"pick_down": 0.00, "place_down": 0.04})  # 新物体取默认值
 
 GRIPPER_OPEN = 0.09
-GRIPPER_CLOSE = 0.00
+GRIPPER_CLOSE = 0.03
 
 # ===============================
 # State definition
@@ -107,7 +108,7 @@ def step_pick_place_fsm(state, state_t0, now, action, targets, is_last_task=Fals
         if now - state_t0 > 1.0:
             return PickPlaceState.LIFT_AFTER_PICK, now, action
     elif state == PickPlaceState.LIFT_AFTER_PICK:
-        action["Ttcp2base"] = make_lift_T(targets["pick_T_above"])
+        action["Ttcp2base"] = make_lift_T(targets["pick_T_down"])
         print(f"LIFT_AFTER_PICK: {action['Ttcp2base']}")
         action["gripper_open"] = GRIPPER_CLOSE
         if now - state_t0 > 1.0:
@@ -131,7 +132,7 @@ def step_pick_place_fsm(state, state_t0, now, action, targets, is_last_task=Fals
         if now - state_t0 > 1.0:
             return PickPlaceState.LIFT_AFTER_PLACE, now, action
     elif state == PickPlaceState.LIFT_AFTER_PLACE:
-        action["Ttcp2base"] = make_lift_T(targets["place_T_above"])
+        action["Ttcp2base"] = make_lift_T(targets["place_T_down"])
         print(f"LIFT_AFTER_PLACE: {action['Ttcp2base']}")
         action["gripper_open"] = GRIPPER_OPEN
         if now - state_t0 > 1.0:
@@ -153,19 +154,20 @@ def step_pick_place_fsm(state, state_t0, now, action, targets, is_last_task=Fals
 # ===============================
 if __name__ == "__main__":
     # --- Load camera calibration ---
-    with open("data/20260115_190746/camera_results.json", "r") as f:
+    with open("data/20260124_002604/camera_results.json", "r") as f:
         cam_results = json.load(f)
 
+    # left arm
     env = RealmanEnv("192.168.101.19")
-    rs_env = Open3dRealsenseEnv("f1471193")
+    # right arm
+    # env_right = RealmanEnv("192.168.101.20")
+    rs_env = Open3dRealsenseEnv("f1471338")
 
     obs = env.reset()
     obs |= rs_env.reset()
 
     # --- Tasks ---
-    #instruction = "Pick the yellow ball and place it in the pink plate, then pick the white can and place it in the blue plate"
-    # instruction = "Pick the white can and place it in the pink plate, then pick the rubik's cube and place it in the blue plate, then pick the yellow sponge and place it in the green plate. "
-    instruction = "Pick the yellow stir stick and place it in the blue plate"
+    instruction = "Pick the white can and place it in the pink plate, then pick the yellow ball and place it in the blue plate"
     task_plan = parse_multi_pick_place_tasks(instruction)
     tasks = task_plan["tasks"]
     print(f"Total tasks: {len(tasks)}")
@@ -187,7 +189,8 @@ if __name__ == "__main__":
     if current_task_idx < len(tasks):
         task = tasks[current_task_idx]
         pick_pt = get_point_vllm(obs["rgb"], f"Pick the {task['pick']}", f"pick_{current_task_idx}.png")
-        place_pt = get_point_vllm(obs["rgb"], f"Place the {task['place']}", f"place_{current_task_idx}.png")
+        place_pt = get_point_vllm(obs["rgb"], f"Place onto the {task['place']}", f"place_{current_task_idx}.png")
+        print(f"obj:{task['pick']},{make_target_T(obs, int(pick_pt[0]), int(pick_pt[1]), rs_env, cam_results, 0)}")
 
     print("\nPress 'a' to start each task\n")
 
@@ -216,10 +219,11 @@ if __name__ == "__main__":
 
             # Precompute next task points
             task = tasks[current_task_idx]
-            h_Parameters = get_h_Parameters_for_object(task["pick"])
+            h_params = get_h_Parameters_for_object(task["pick"])
+            
             targets = {
-                "pick_T_down": make_target_T(obs, int(pick_pt[0]), int(pick_pt[1]), rs_env, cam_results, h_Parameters["pick_down"]),
-                "place_T_down": make_target_T(obs, int(place_pt[0]), int(place_pt[1]), rs_env, cam_results, h_Parameters["place_down"]),
+                "pick_T_down": make_target_T(obs, int(pick_pt[0]), int(pick_pt[1]), rs_env, cam_results, h_params["pick_down"]),
+                "place_T_down": make_target_T(obs, int(place_pt[0]), int(place_pt[1]), rs_env, cam_results, h_params["place_down"]),
                 "home_T": home_T
             }
 
