@@ -797,7 +797,7 @@ def main():
 
     robot_state = env.get_state()
     home_T_tcp2base = T_from_realman_xyzrpy(robot_state.pose)
-    print(f"[初始化] Home 位姿: {np.round(robot_state.pose, 4)}")
+    print(f"[初始化] Home T_tcp2base 位姿: {np.round(home_T_tcp2base, 4)}")
 
     exit(0)
     # ============================

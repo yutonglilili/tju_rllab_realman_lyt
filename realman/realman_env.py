@@ -1,7 +1,7 @@
 """
 重新封装的realman环境，目标是充分利用realman api已有的函数，并提供一个统一的接口，方便使用。
 希望具备以下功能：
-1.支持pose和joint两种动作模式；
+1.支持pose和joint两种动作模式: 已实现
 2.支持相对位置和绝对位置两种控制模式；
 3.支持夹爪闭合程度控制；
 4.支持避障，自碰撞检测和路径规划功能，通过curobo实现；
@@ -69,6 +69,20 @@ T_TCP2REALMANEEF = transform_from(
     np.array([0, 0, 0.22])  
 )
 
+# 将末端执行器 EEF xyzrpy 转换为夹爪中心 TCP xyzrpy
+def pose_eef2tcp(pose_eef: np.ndarray) -> np.ndarray:
+    T_eef2base = T_from_realman_xyzrpy(pose_eef)
+    T_tcp2base = T_eef2base @ T_TCP2REALMANEEF
+    pose_tcp = realman_xyzrpy_from_T(T_tcp2base)
+    return pose_tcp
+
+# 将夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy
+def pose_tcp2eef(pose_tcp: np.ndarray) -> np.ndarray:
+    T_tcp2base = T_from_realman_xyzrpy(pose_tcp)
+    T_eef2base = T_tcp2base @ np.linalg.inv(T_TCP2REALMANEEF)
+    pose_eef = realman_xyzrpy_from_T(T_eef2base)
+    return pose_eef
+
 # 将夹爪宽度(m)转换为 RealMan 夹爪值
 def realman_gripper_value_from_width(width: float) -> int:
     return int(9000 - int(width * 1e5))
@@ -85,18 +99,20 @@ def width_from_realman_gripper_value(gripper_value: int) -> float:
 @dataclass
 class RobotState:
     """机器人状态快照"""
-    pose: np.ndarray        # xyzrpy 末端执行器 EEF 位姿
+    pose: np.ndarray        # xyzrpy 夹爪中心 TCP 位姿
     joint: np.ndarray       # 关节角度
     gripper: float          # 夹爪开度(单位: 米)
     timestamp: float        # 时间戳
 
 
 # =========================
-# Driver（只做SDK封装）
+# Driver(只做 SDK 封装)
 # =========================
 class RealmanDriver:
     """
-    RealMan 机械臂底层驱动封装（Driver Layer）
+    RealMan 机械臂底层驱动封装(Driver Layer)
+    
+    注意：该层的 pose 均为末端执行器 EEF 位姿
     """
     def __init__(self, robot_ip: str):
         self.arm = RoboticArm(rm_thread_mode_e.RM_TRIPLE_MODE_E)
@@ -137,10 +153,10 @@ class RealmanDriver:
 
     def movep(self, pose):
         """
-        笛卡尔空间运动（Pose Control）
+        笛卡尔空间运动(Pose Control)
 
         Args:
-            pose: xyzrpy（6维）
+            pose: xyzrpy (6维) 末端执行器 EEF 位姿
 
         Returns:
             ret: SDK 返回码
@@ -157,7 +173,7 @@ class RealmanDriver:
 
         Returns:
             dict:
-                - pose: xyzrpy
+                - pose: xyzrpy (6维) 末端执行器 EEF 位姿
                 - joint: 弧度制关节角
 
             或 None(通信失败)
@@ -286,11 +302,11 @@ class SyncController:
         Args:
             action:
                 - "joint": 关节角
-                - "pose": 末端位姿
+                - "pose": 夹爪中心 TCP 位姿(xyzrpy 6维)
                 - "gripper": 夹爪开度
 
         Returns:
-            RobotState(执行后的状态)
+            RobotState(执行后的状态, pose 为夹爪中心 TCP 位姿, xyzrpy 6维)
 
         注意:
         - 不保证运动完成(取决于 SDK)
@@ -304,7 +320,8 @@ class SyncController:
         if "joint" in action:
             self.driver.movej(action["joint"])
         elif "pose" in action:
-            self.driver.movep(action["pose"])
+            pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
+            self.driver.movep(pose_eef)
 
         if "gripper" in action:
             self.driver.set_gripper(action["gripper"])
@@ -316,15 +333,17 @@ class SyncController:
         获取当前状态(同步读取)
 
         Returns:
-            RobotState
+            RobotState(执行后的状态, pose 为夹爪中心 TCP 位姿, xyzrpy 6维)
 
         注意:
         - 每次都会访问 SDK(慢)
         - 无缓存
         """
         s = self.driver.get_state()
+        pose_tcp = pose_eef2tcp(s["pose"])
+
         return RobotState(
-            pose=s["pose"],
+            pose=pose_tcp,
             joint=s["joint"],
             gripper=self.driver.get_gripper(),
             timestamp=time.time(),
