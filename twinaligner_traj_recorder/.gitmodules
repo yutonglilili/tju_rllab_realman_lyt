@@ -1,0 +1,6 @@
+[submodule "dependencies/curobo"]
+	path = dependencies/curobo
+	url = https://github.com/NVlabs/curobo.git
+[submodule "dependencies/frankapy"]
+	path = dependencies/frankapy
+	url = https://github.com/iamlab-cmu/frankapy.git
