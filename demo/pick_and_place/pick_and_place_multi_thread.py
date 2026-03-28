@@ -205,7 +205,7 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                 target_T = make_lift_T(target_T, lift_z=PLACE_Z_OFFSET)
 
             # 修正相机标定偏移（向右偏置 1cm）
-            target_T = make_lift_T(target_T, lift_x=-0.01)
+            target_T = make_lift_T(target_T, lift_x=-0.02)
 
             new_xyz = target_T[:3, 3]
 
