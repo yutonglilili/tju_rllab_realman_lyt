@@ -392,6 +392,57 @@ def save_check_image(image_rgb, prefix, object_name, container_name=None, save_d
     print(f"📸 Image saved to: {save_path}")
 
 
+def crop_image_around_point(image_rgb, point_2d, crop_size=480):
+    """
+    以 2D 打点为中心裁剪图像，用于 check 阶段放大目标区域。
+
+    Args:
+        image_rgb: RGB 图像，shape=(H, W, 3)
+        point_2d: 中心点 [x, y]
+        crop_size: 正方形裁剪边长（像素）
+
+    Returns:
+        裁剪后的 RGB 图像；如果 point_2d 无效则返回原图
+    """
+    if image_rgb is None or point_2d is None:
+        return image_rgb
+
+    h, w = image_rgb.shape[:2]
+    crop_size = int(max(32, min(crop_size, h, w)))
+    half = crop_size // 2
+
+    x = int(round(point_2d[0]))
+    y = int(round(point_2d[1]))
+
+    x = int(np.clip(x, 0, w - 1))
+    y = int(np.clip(y, 0, h - 1))
+
+    x1 = x - half
+    y1 = y - half
+    x2 = x1 + crop_size
+    y2 = y1 + crop_size
+
+    if x1 < 0:
+        x2 -= x1
+        x1 = 0
+    if y1 < 0:
+        y2 -= y1
+        y1 = 0
+    if x2 > w:
+        x1 -= (x2 - w)
+        x2 = w
+    if y2 > h:
+        y1 -= (y2 - h)
+        y2 = h
+
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(w, x2)
+    y2 = min(h, y2)
+
+    return image_rgb[y1:y2, x1:x2].copy()
+
+
 # ===============================
 # 可视化工具
 # ===============================

@@ -35,6 +35,7 @@ from pick_and_place_utils import (
     make_target_T,
     make_lift_T,
     save_check_image,
+    crop_image_around_point,
 )
 from multi_pointing_vllm_get_point_utils import (
     parse_multi_pick_place_tasks,
@@ -59,7 +60,7 @@ SAFE_HEIGHT = 0.06              # 安全高度（米）
 TRAJECTORY_DOWNSAMPLE = 2       # 轨迹下采样率
 
 # 执行参数
-CONTROL_INTERVAL = 0.05         # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
+CONTROL_INTERVAL = 0.0          # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
 GRIPPER_OPEN = 0.09             # 夹爪全开
 GRIPPER_CLOSE = 0.03            # 夹爪全闭
 
@@ -70,6 +71,9 @@ MAX_PLACE_RETRIES = 3           # place 最大重试次数
 # 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
 CHECK_PICK_SUCCESS_MODE = 1
 CHECK_PLACE_SUCCESS_MODE = 1
+
+CHECK_PICK_CROP_SIZE = 480
+CHECK_PLACE_CROP_SIZE = 560
 
 # 保存图像路径
 SAVE_DIR = "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
@@ -82,6 +86,8 @@ RX_DEGREE_FAR_LOW = 30
 # 预抓取位姿偏移
 APPROACH_Y_OFFSET = 0.03
 APPROACH_Z_OFFSET = 0.06
+APPROACH_LINEAR_STEP = 0.03      # APPROACH 直线插值的单段位移（米）
+APPROACH_ANGULAR_STEP = 0.15     # APPROACH 直线插值的单段姿态变化（弧度）
 
 
 # ═══════════════════════════════════════════════════
@@ -345,10 +351,29 @@ def build_approach_action_list(target_T, home_T_tcp2base, current_joint,
     else:
         pre_target_T = make_lift_T(pick_T, lift_z=APPROACH_Z_OFFSET)
 
-    # 3. 调用 curobo 规划从当前关节状态到 pre_target 的无碰撞轨迹
+    
+    # 3. 在 curobo 尚未接入前，直接把当前位置到 pre_target 的直线拆成多个 waypoint
     # TODO: 替换为实际的 curobo plan 调用
     # trajectory = curobo_planner.plan(current_joint, pre_target_T)
-    trajectory = [realman_xyzrpy_from_T(pre_target_T)]
+    current_state = env.get_state()
+    if current_state is None:
+        return None
+
+    start_pose = current_state.pose.copy()
+    target_pose = realman_xyzrpy_from_T(pre_target_T)
+
+    start_pos = start_pose[:3]
+    target_pos = target_pose[:3]
+    target_rpy = target_pose[3:]
+
+    linear_dist = np.linalg.norm(target_pos - start_pos)
+    num_segments = max(1, int(np.ceil(linear_dist / APPROACH_LINEAR_STEP)))
+
+    trajectory = []
+    for alpha in np.linspace(0.0, 1.0, num_segments + 1)[1:]:
+        waypoint_pos = (1.0 - alpha) * start_pos + alpha * target_pos
+        waypoint = np.concatenate([waypoint_pos, target_rpy])
+        trajectory.append(waypoint)
 
     if trajectory is None:
         return None
@@ -356,6 +381,8 @@ def build_approach_action_list(target_T, home_T_tcp2base, current_joint,
     # 4. 下采样
     if len(trajectory) > 2:
         trajectory = trajectory[::TRAJECTORY_DOWNSAMPLE]
+        if not np.allclose(trajectory[-1], target_pose):
+            trajectory.append(target_pose)
 
     # 5. 构建动作列表
     gripper_state = GRIPPER_OPEN if task_phase == TaskPhase.PICK else GRIPPER_CLOSE
@@ -500,15 +527,20 @@ def execute_critical_sequence(env, critical_actions):
 # 结果检测
 # ═══════════════════════════════════════════════════
 
-def do_check_pick_success(rs_env, pick_name):
+def do_check_pick_success(rs_env, pick_name, point_2d=None):
     """调用 VLM 检测 pick 是否成功"""
 
     if CHECK_PICK_SUCCESS_MODE == 1:
         print("[检测] 检查抓取是否成功...")
         obs = rs_env.step()
         image_rgb = obs["rgb"]
-        save_check_image(image_rgb, prefix="pick", object_name=pick_name, save_dir=SAVE_DIR)
-        return check_grasp_success_vllm(image_rgb, pick_name)
+        image_for_check = crop_image_around_point(
+            image_rgb,
+            point_2d,
+            crop_size=CHECK_PICK_CROP_SIZE,
+        )
+        save_check_image(image_for_check, prefix="pick", object_name=pick_name, save_dir=SAVE_DIR)
+        return check_grasp_success_vllm(image_for_check, pick_name)
 
     elif CHECK_PICK_SUCCESS_MODE == 2:
         print("[检测] 跳过 pick 检测")
@@ -524,16 +556,21 @@ def do_check_pick_success(rs_env, pick_name):
                 return False
 
 
-def do_check_place_success(rs_env, pick_name, place_name):
+def do_check_place_success(rs_env, pick_name, place_name, point_2d=None):
     """调用 VLM 检测 place 是否成功"""
 
     if CHECK_PLACE_SUCCESS_MODE == 1:
         print("[检测] 检查放置是否成功...")
         obs = rs_env.step()
         image_rgb = obs["rgb"]
-        save_check_image(image_rgb, prefix="place", object_name=pick_name,
+        image_for_check = crop_image_around_point(
+            image_rgb,
+            point_2d,
+            crop_size=CHECK_PLACE_CROP_SIZE,
+        )
+        save_check_image(image_for_check, prefix="place", object_name=pick_name,
                          container_name=place_name, save_dir=SAVE_DIR)
-        return check_place_success_vllm(image_rgb, pick_name, place_name)
+        return check_place_success_vllm(image_for_check, pick_name, place_name)
 
     elif CHECK_PLACE_SUCCESS_MODE == 2:
         print("[检测] 跳过 place 检测")
@@ -633,9 +670,10 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
         # ─────────────────────────────────────
         with state.lock:
             state.system_mode = SystemMode.CHECKING
+            check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
             # 感知线程仍然暂停
 
-        pick_success = do_check_pick_success(rs_env, task['pick'])
+        pick_success = do_check_pick_success(rs_env, task['pick'], point_2d=check_point_2d)
 
         if pick_success:
             print("✅ Pick 成功!")
@@ -714,8 +752,14 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
         # ─────────────────────────────────────
         with state.lock:
             state.system_mode = SystemMode.CHECKING
+            check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
 
-        place_success = do_check_place_success(rs_env, task['pick'], task['place'])
+        place_success = do_check_place_success(
+            rs_env,
+            task['pick'],
+            task['place'],
+            point_2d=check_point_2d,
+        )
 
         if place_success:
             print("✅ Place 成功!")

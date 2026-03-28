@@ -24,8 +24,8 @@ from Robotic_Arm.rm_robot_interface import (
 )
 
 JOINT_MAX_SPEED_DEG_S = 20.0
-SYNC_MOVEJ_SPEED_PERCENT = 60
-SYNC_MOVEL_SPEED_PERCENT = 60
+SYNC_MOVEJ_SPEED_PERCENT = 80
+SYNC_MOVEL_SPEED_PERCENT = 80
 GRIPPER_SPEED = 30
 GRIPPER_TOLERANCE = 0.005
 GRIPPER_TIMEOUT_S = 2.0
@@ -173,7 +173,7 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码
         """
-        return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, 0, 0, 1)
+        return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=3, connect=0, block=1)
 
     def movej_follow(self, joint):
         """关节空间跟随运动(用于异步流式控制)"""
@@ -325,6 +325,8 @@ class SyncController:
             driver: 底层机器人驱动(只负责执行命令)
         """
         self.driver = driver
+        # 串行化所有同步操作，确保 reset / step / get_state 不会并发访问机器人
+        self._op_lock = threading.RLock()
 
     def step(self, action: dict) -> RobotState:
         """
@@ -348,23 +350,24 @@ class SyncController:
         - RL training(低频)
         - 单步调试(debug)
         """
-        move_ret = None
-        if "joint" in action:
-            move_ret = self.driver.movej(action["joint"])
-        elif "pose" in action:
-            pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
-            move_ret = self.driver.movep(pose_eef)
+        with self._op_lock:
+            move_ret = None
+            if "joint" in action:
+                move_ret = self.driver.movej(action["joint"])
+            elif "pose" in action:
+                pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
+                move_ret = self.driver.movep(pose_eef)
 
-        state = self.get_state()
-
-        if move_ret not in (None, 0):
-            raise RuntimeError(f"机器人运动失败，ret={move_ret}")
-
-        if "gripper" in action:
-            self.driver.set_gripper(action["gripper"], wait=True)
             state = self.get_state()
 
-        return state
+            if move_ret not in (None, 0):
+                raise RuntimeError(f"机器人运动失败，ret={move_ret}")
+
+            if "gripper" in action:
+                self.driver.set_gripper(action["gripper"], wait=True)
+                state = self.get_state()
+
+            return state
 
     def get_state(self) -> RobotState:
         """
@@ -377,15 +380,16 @@ class SyncController:
         - 每次都会访问 SDK(慢)
         - 无缓存
         """
-        s = self.driver.get_state()
-        pose_tcp = pose_eef2tcp(s["pose"])
+        with self._op_lock:
+            s = self.driver.get_state()
+            pose_tcp = pose_eef2tcp(s["pose"])
 
-        return RobotState(
-            pose=pose_tcp,
-            joint=s["joint"],
-            gripper=self.driver.get_gripper(),
-            timestamp=time.time(),
-        )
+            return RobotState(
+                pose=pose_tcp,
+                joint=s["joint"],
+                gripper=self.driver.get_gripper(),
+                timestamp=time.time(),
+            )
 
     def reset(self):
         """
@@ -403,39 +407,40 @@ class SyncController:
         适合:
         - 重置环境
         """
-        target_joint = np.array([90, 0, 0, -90, 0, -90, 60])
-        target_joint_rad = np.radians(target_joint)
+        with self._op_lock:
+            target_joint = np.array([90, 0, 0, -90, 0, -90, 60])
+            target_joint_rad = np.radians(target_joint)
 
-        self.driver.movej(target_joint)
+            self.driver.movej(target_joint)
 
-        start_time = time.time()
+            start_time = time.time()
 
-        # 等待关节角度收敛
-        while True:
-            state = self.driver.get_state()
+            # 等待关节角度收敛
+            while True:
+                state = self.driver.get_state()
 
-            if state is None:
+                if state is None:
+                    time.sleep(0.02)
+                    continue
+
+                err = np.linalg.norm(state["joint"] - target_joint_rad)
+
+                # 收敛
+                if err < 0.1:
+                    break
+
+                # 超时保护
+                if time.time() - start_time > 5:
+                    print(f"[SyncController] reset 超时，当前误差: {err:.4f}")
+                    break
+
                 time.sleep(0.02)
-                continue
 
-            err = np.linalg.norm(state["joint"] - target_joint_rad)
+            self.driver.set_gripper(0.09, wait=True)
 
-            # 收敛
-            if err < 0.1:
-                break
+            time.sleep(0.2)
 
-            # 超时保护
-            if time.time() - start_time > 5:
-                print(f"[SyncController] reset 超时，当前误差: {err:.4f}")
-                break
-
-            time.sleep(0.02)
-
-        self.driver.set_gripper(0.09, wait=True)
-
-        time.sleep(0.2)
-
-        return self.get_state()
+            return self.get_state()
 
 
 # =========================
