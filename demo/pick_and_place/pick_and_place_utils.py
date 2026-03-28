@@ -381,9 +381,9 @@ def save_check_image(image_rgb, prefix, object_name, container_name=None, save_d
     timestamp = time.strftime("%Y%m%d_%H%M%S")
 
     if container_name:
-        filename = f"{prefix}_{object_name}_to_{container_name}_{timestamp}.png"
+        filename = f"{timestamp}_check_{prefix}_{object_name}_to_{container_name}.png"
     else:
-        filename = f"{prefix}_{object_name}_{timestamp}.png"
+        filename = f"{timestamp}_check_{prefix}_{object_name}.png"
 
     save_path = os.path.join(save_dir, filename)
 

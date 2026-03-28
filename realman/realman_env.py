@@ -23,6 +23,13 @@ from Robotic_Arm.rm_robot_interface import (
     rm_peripheral_read_write_params_t,
 )
 
+JOINT_MAX_SPEED_DEG_S = 20.0
+SYNC_MOVEJ_SPEED_PERCENT = 40
+SYNC_MOVEL_SPEED_PERCENT = 40
+GRIPPER_SPEED = 40
+GRIPPER_TOLERANCE = 0.005
+GRIPPER_TIMEOUT_S = 2.0
+
 # =========================
 # Utils
 # =========================
@@ -125,9 +132,9 @@ class RealmanDriver:
         self.arm.rm_set_modbus_mode(1, 115200, 2)
         time.sleep(0.5)     # 等待设备就绪
 
-        # 设置夹爪速度（寄存器 260）
+        # 设置夹爪速度（寄存器 260，1=最慢，100=最快）
         param = rm_peripheral_read_write_params_t(1, 260, 1)
-        self.arm.rm_write_single_register(param, 1)
+        self.arm.rm_write_single_register(param, GRIPPER_SPEED)
 
         # 限制速度，避免危险动作
         self.arm.rm_set_arm_max_line_speed(0.1)
@@ -135,13 +142,17 @@ class RealmanDriver:
         self.arm.rm_set_arm_max_angular_speed(0.5)
         self.arm.rm_set_arm_max_angular_acc(1.0)
 
+        # 限制关节速度，避免危险动作
+        for joint_idx in range(1, 8):
+            self.arm.rm_set_joint_max_speed(joint_idx, JOINT_MAX_SPEED_DEG_S)
+
     # =========================
     # 机械臂运动控制
     # =========================
 
     def movej(self, joint):
         """
-        关节空间运动(Joint Control)
+        关节空间运动(Joint Control, 阻塞)
 
         Args:
             joint: 目标关节角(单位: 度, 7维)
@@ -149,11 +160,12 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码(0 表示成功)
         """
-        return self.arm.rm_movej_follow(joint)
+        ret = self.arm.rm_movej(joint, SYNC_MOVEJ_SPEED_PERCENT, 0, 0, 1)
+        return ret
 
     def movep(self, pose):
         """
-        笛卡尔空间运动(Pose Control)
+        笛卡尔空间运动(Pose Control, 阻塞)
 
         Args:
             pose: xyzrpy (6维) 末端执行器 EEF 位姿
@@ -161,6 +173,14 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码
         """
+        return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, 0, 0, 1)
+
+    def movej_follow(self, joint):
+        """关节空间跟随运动(用于异步流式控制)"""
+        return self.arm.rm_movej_follow(joint)
+
+    def movep_follow(self, pose):
+        """笛卡尔空间跟随运动(用于异步流式控制)"""
         return self.arm.rm_movep_follow(pose)
 
     # =========================
@@ -199,12 +219,14 @@ class RealmanDriver:
     # 夹爪控制（Modbus）
     # =========================
 
-    def set_gripper(self, width):
+    def set_gripper(self, width, wait=True, timeout=GRIPPER_TIMEOUT_S):
         """
         设置夹爪开度
 
         Args:
             width: 夹爪宽度(单位: 米)
+            wait: 是否等待夹爪到位
+            timeout: 等待超时时间(秒)
 
         内部流程：
         1. 宽度 → 寄存器值
@@ -212,8 +234,7 @@ class RealmanDriver:
         3. 触发执行(264)
 
         注意:
-        - 无返回值(SDK未提供明确执行反馈)
-        - 不保证执行成功(可由上层做重试)
+        - 通过读取当前位置轮询夹爪是否到位
         """
         value = realman_gripper_value_from_width(width)
 
@@ -224,6 +245,16 @@ class RealmanDriver:
         # 触发执行(264)
         param = rm_peripheral_read_write_params_t(1, 264, 1)
         self.arm.rm_write_single_register(param, 1)
+
+        if not wait:
+            return
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            current_width = self.get_gripper()
+            if abs(current_width - width) < GRIPPER_TOLERANCE:
+                return
+            time.sleep(0.02)
 
     def get_gripper(self):
         """
@@ -309,7 +340,7 @@ class SyncController:
             RobotState(执行后的状态, pose 为夹爪中心 TCP 位姿, xyzrpy 6维)
 
         注意:
-        - 不保证运动完成(取决于 SDK)
+        - joint / pose 动作会阻塞到控制器返回完成
         - 每次调用都会访问真实机器人(较慢)
         - 不做频率控制
 
@@ -317,16 +348,23 @@ class SyncController:
         - RL training(低频)
         - 单步调试(debug)
         """
+        move_ret = None
         if "joint" in action:
-            self.driver.movej(action["joint"])
+            move_ret = self.driver.movej(action["joint"])
         elif "pose" in action:
             pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
-            self.driver.movep(pose_eef)
+            move_ret = self.driver.movep(pose_eef)
+
+        state = self.get_state()
+
+        if move_ret not in (None, 0):
+            raise RuntimeError(f"机器人运动失败，ret={move_ret}")
 
         if "gripper" in action:
-            self.driver.set_gripper(action["gripper"])
+            self.driver.set_gripper(action["gripper"], wait=True)
+            state = self.get_state()
 
-        return self.get_state()
+        return state
 
     def get_state(self) -> RobotState:
         """
@@ -366,6 +404,7 @@ class SyncController:
         - 重置环境
         """
         target_joint = np.array([90, 0, 0, -90, 0, -90, 60])
+        target_joint_rad = np.radians(target_joint)
 
         self.driver.movej(target_joint)
 
@@ -379,7 +418,7 @@ class SyncController:
                 time.sleep(0.02)
                 continue
 
-            err = np.linalg.norm(state["joint"] - target_joint)
+            err = np.linalg.norm(state["joint"] - target_joint_rad)
 
             # 收敛
             if err < 0.1:
@@ -392,7 +431,7 @@ class SyncController:
 
             time.sleep(0.02)
 
-        self.driver.set_gripper(0.09)
+        self.driver.set_gripper(0.09, wait=True)
 
         time.sleep(0.2)
 
@@ -523,13 +562,13 @@ class AsyncController:
                 time.sleep(self.min_interval - (now - last))
 
             if j is not None:
-                self.driver.movej(j)
+                self.driver.movej_follow(j)
             elif p is not None:
-                self.driver.movep(p)
+                self.driver.movep_follow(p)
 
             # 夹爪并行
             if g is not None:
-                self.driver.set_gripper(g)
+                self.driver.set_gripper(g, wait=False)
 
             last = time.time()  
 

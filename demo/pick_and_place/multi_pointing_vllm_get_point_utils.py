@@ -77,7 +77,6 @@ def parse_multi_pick_place_tasks(text_prompt):
     )
 
     content = response.choices[0].message.content.strip()
-    print("[VLM multi-task raw output]\n", content)
 
     # =========================================================
     # Step 1: 去 markdown 包裹

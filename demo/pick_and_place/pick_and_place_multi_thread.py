@@ -50,6 +50,7 @@ from multi_pointing_vllm_get_point_utils import (
 
 # 感知参数
 PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
+PLACE_Z_OFFSET = 0.10           # place 阶段 z 轴高度偏移（米）
 MOVE_OBJECT_THRESHOLD = 0.03    # 物体移动检测阈值（米，3cm）
 MOVE_CONTAINER_THRESHOLD = 0.10 # 容器移动检测阈值（米，10cm）
 
@@ -77,6 +78,10 @@ SAVE_DIR = "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
 RX_DEGREE_CLOSE = 10
 RX_DEGREE_FAR_HIGH = 45
 RX_DEGREE_FAR_LOW = 30
+
+# 预抓取位姿偏移
+APPROACH_Y_OFFSET = 0.03
+APPROACH_Z_OFFSET = 0.06
 
 
 # ═══════════════════════════════════════════════════
@@ -117,7 +122,7 @@ class SharedState:
         self.target_name = None                     # 当前追踪的目标名称
         self.latest_point_2d = None                 # 最新 2D 打点结果 (x, y)
         self.latest_point_3d = None                 # 最新 3D 坐标 (base 坐标系)
-        self.latest_target_T = None                 # 最新目标物体的 4x4 位姿矩阵（需要检查tcp还是eef）
+        self.latest_target_T = None                 # 最新目标物体的 4x4 位姿矩阵（此处为 TCP2BASE）
         self.last_stable_point_3d = None            # 上次稳定 3D 坐标
         self.point_changed = False
         self.is_first_point = True
@@ -162,6 +167,7 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
         # --- 获取当前追踪目标 ---
         with state.lock:
             target_name = state.target_name
+            task_phase = state.task_phase
             if target_name is None:
                 pass  # fall through to sleep
             else:
@@ -193,6 +199,14 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                 cam_results,
                 home_T_tcp2base,
             )
+
+            # 对于place阶段修订z轴高度
+            if task_phase == TaskPhase.PLACE:
+                target_T = make_lift_T(target_T, lift_z=PLACE_Z_OFFSET)
+
+            # 修正相机标定偏移（向右偏置 1cm）
+            target_T = make_lift_T(target_T, lift_x=-0.01)
+
             new_xyz = target_T[:3, 3]
 
             # 4. 更新共享状态 & 变化检测
@@ -274,6 +288,7 @@ def planning_thread(state, env, curobo_planner, home_T_tcp2base):
             current_joint = robot_state.joint  # 弧度制
 
             # 2. 构建 APPROACH 段动作列表（只规划到 pre_pick/pre_place）
+
             action_list = build_approach_action_list(
                 target_T, home_T_tcp2base, current_joint,
                 curobo_planner, task_phase, env,
@@ -321,11 +336,14 @@ def build_approach_action_list(target_T, home_T_tcp2base, current_joint,
         None 表示规划失败
     """
 
-    # 1. 根据阶段计算抓取姿态的旋转
+    # 1. 根据位置计算抓取姿态
     pick_T = compute_grasp_T(target_T, home_T_tcp2base)
 
     # 2. 计算 pre 位姿（目标上方安全位置）
-    pre_target_T = make_lift_T(pick_T, lift_z=SAFE_HEIGHT)
+    if task_phase == TaskPhase.PICK:
+        pre_target_T = make_lift_T(pick_T, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
+    else:
+        pre_target_T = make_lift_T(pick_T, lift_z=APPROACH_Z_OFFSET)
 
     # 3. 调用 curobo 规划从当前关节状态到 pre_target 的无碰撞轨迹
     # TODO: 替换为实际的 curobo plan 调用
@@ -382,9 +400,6 @@ def compute_grasp_T(target_T, home_T_tcp2base):
     grasp_T = copy.deepcopy(home_T_tcp2base)
     grasp_T[:3, :3] = Rx @ home_T_tcp2base[:3, :3]
     grasp_T[:3, 3] = target_T[:3, 3]
-
-    # 修正相机标定偏移（x 轴偏移 1cm）
-    grasp_T = make_lift_T(grasp_T, lift_x=0.01)
 
     return grasp_T
 
@@ -492,7 +507,7 @@ def do_check_pick_success(rs_env, pick_name):
         print("[检测] 检查抓取是否成功...")
         obs = rs_env.step()
         image_rgb = obs["rgb"]
-        save_check_image(image_rgb, prefix="pick_check", object_name=pick_name, save_dir=SAVE_DIR)
+        save_check_image(image_rgb, prefix="pick", object_name=pick_name, save_dir=SAVE_DIR)
         return check_grasp_success_vllm(image_rgb, pick_name)
 
     elif CHECK_PICK_SUCCESS_MODE == 2:
@@ -516,7 +531,7 @@ def do_check_place_success(rs_env, pick_name, place_name):
         print("[检测] 检查放置是否成功...")
         obs = rs_env.step()
         image_rgb = obs["rgb"]
-        save_check_image(image_rgb, prefix="place_check", object_name=pick_name,
+        save_check_image(image_rgb, prefix="place", object_name=pick_name,
                          container_name=place_name, save_dir=SAVE_DIR)
         return check_place_success_vllm(image_rgb, pick_name, place_name)
 
@@ -598,9 +613,9 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
             target_T = target_T.copy()
 
         # 计算抓取位姿
-        grasp_T = compute_grasp_T(target_T, home_T_tcp2base)
-        pick_xyzrpy = realman_xyzrpy_from_T(grasp_T)
-        post_pick_T = make_lift_T(grasp_T, lift_z=SAFE_HEIGHT, lift_y=0.03)
+        pick_T = compute_grasp_T(target_T, home_T_tcp2base)
+        pick_xyzrpy = realman_xyzrpy_from_T(pick_T)
+        post_pick_T = make_lift_T(pick_T, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
         post_pick_xyzrpy = realman_xyzrpy_from_T(post_pick_T)
 
         critical_actions = [
@@ -679,10 +694,9 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
 
         # 计算放置位姿（使用 pick 时的抓取旋转，保持物体姿态）
         place_T = compute_grasp_T(target_T, home_T_tcp2base)
-        place_T = make_lift_T(place_T, lift_z=0.13)     # 放置高度偏移
         place_xyzrpy = realman_xyzrpy_from_T(place_T)
 
-        post_place_T = make_lift_T(place_T, lift_z=SAFE_HEIGHT)
+        post_place_T = make_lift_T(place_T, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
         post_place_xyzrpy = realman_xyzrpy_from_T(post_place_T)
 
         critical_actions = [
@@ -775,6 +789,8 @@ def main():
     # ============================
     # 1. 初始化环境
     # ============================
+    
+    # 左臂
     env = RealmanEnv(robot_ip="192.168.101.19", mode="sync")
 
     rs_env = Open3dRealsenseEnv("f1471338")
@@ -786,6 +802,7 @@ def main():
     # ============================
     # 2. 初始化 curobo（TODO）
     # ============================
+
     # curobo_planner = init_curobo(robot_config_path)
     # curobo_planner.warmup()
     curobo_planner = None  # TODO: 替换为实际的 curobo 规划器
@@ -793,17 +810,17 @@ def main():
     # ============================
     # 3. 获取初始位姿
     # ============================
+
     env.reset()
 
     robot_state = env.get_state()
     home_T_tcp2base = T_from_realman_xyzrpy(robot_state.pose)
-    print(f"[初始化] Home T_tcp2base 位姿: {np.round(home_T_tcp2base, 4)}")
 
-    exit(0)
     # ============================
     # 4. 指令拆解
     # ============================
-    instruction = "Pick the white ball and place it on the blue plate."
+
+    instruction = "Pick the white ball and place it on the blue plate, then pick the carrot and place it on the blue plate."
     print(f"\n[任务] 指令: {instruction}")
     print("[任务] 调用 VLM 拆解指令...")
 
@@ -812,11 +829,13 @@ def main():
 
     print(f"[任务] 📋 共 {len(task_list)} 个任务:")
     for i, t in enumerate(task_list):
-        print(f"  [{i+1}] pick={t['pick']} → place={t['place']}")
+        print(f"  [{i+1}] pick = {t['pick']} → place = {t['place']}")
+
 
     # ============================
     # 5. 初始化共享状态
     # ============================
+
     state = SharedState()
 
     # ============================
@@ -846,6 +865,7 @@ def main():
     for t in threads:
         t.start()
         print(f"  ✅ {t.name} 已启动")
+
 
     # ============================
     # 7. 主线程：调度任务
