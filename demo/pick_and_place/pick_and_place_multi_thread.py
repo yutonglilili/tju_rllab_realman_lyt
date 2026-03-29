@@ -352,46 +352,13 @@ def build_approach_action_list(target_T, home_T_tcp2base, current_joint,
         pre_target_T = make_lift_T(pick_T, lift_z=APPROACH_Z_OFFSET)
 
     
-    # 3. 在 curobo 尚未接入前，直接把当前位置到 pre_target 的直线拆成多个 waypoint
+    # 3. 在 curobo 尚未接入前，直接使用 pretarget 单个点作为目标由 realman 自己解轨迹
     # TODO: 替换为实际的 curobo plan 调用
     # trajectory = curobo_planner.plan(current_joint, pre_target_T)
-    current_state = env.get_state()
-    if current_state is None:
-        return None
-
-    start_pose = current_state.pose.copy()
+    
     target_pose = realman_xyzrpy_from_T(pre_target_T)
-
-    start_pos = start_pose[:3]
-    target_pos = target_pose[:3]
-    target_rpy = target_pose[3:]
-
-    linear_dist = np.linalg.norm(target_pos - start_pos)
-    num_segments = max(1, int(np.ceil(linear_dist / APPROACH_LINEAR_STEP)))
-
-    trajectory = []
-    for alpha in np.linspace(0.0, 1.0, num_segments + 1)[1:]:
-        waypoint_pos = (1.0 - alpha) * start_pos + alpha * target_pos
-        waypoint = np.concatenate([waypoint_pos, target_rpy])
-        trajectory.append(waypoint)
-
-    if trajectory is None:
-        return None
-
-    # 4. 下采样
-    if len(trajectory) > 2:
-        trajectory = trajectory[::TRAJECTORY_DOWNSAMPLE]
-        if not np.allclose(trajectory[-1], target_pose):
-            trajectory.append(target_pose)
-
-    # 5. 构建动作列表
     gripper_state = GRIPPER_OPEN if task_phase == TaskPhase.PICK else GRIPPER_CLOSE
-    action_list = []
-    for waypoint in trajectory:
-        action_list.append({
-            "pose": waypoint,       # xyzrpy
-            "gripper": gripper_state,
-        })
+    action_list = [{"pose": target_pose, "gripper": gripper_state}]
 
     return action_list
 

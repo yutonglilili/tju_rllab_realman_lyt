@@ -173,6 +173,9 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码
         """
+        print("================================================")
+        print(f"movep: {pose}")
+        print("================================================")
         return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=3, connect=0, block=1)
 
     def movej_follow(self, joint):
@@ -354,10 +357,11 @@ class SyncController:
             move_ret = None
             if "joint" in action:
                 move_ret = self.driver.movej(action["joint"])
-            elif "pose" in action:
+            
+            elif "pose" in action and action["pose"] is not None:
                 pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
                 move_ret = self.driver.movep(pose_eef)
-
+            
             state = self.get_state()
 
             if move_ret not in (None, 0):
