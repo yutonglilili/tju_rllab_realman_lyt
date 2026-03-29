@@ -23,9 +23,9 @@ from Robotic_Arm.rm_robot_interface import (
     rm_peripheral_read_write_params_t,
 )
 
-JOINT_MAX_SPEED_DEG_S = 30.0
-SYNC_MOVEJ_SPEED_PERCENT = 80
-SYNC_MOVEL_SPEED_PERCENT = 80
+JOINT_MAX_SPEED_DEG_S = 20.0
+SYNC_MOVEJ_SPEED_PERCENT = 60
+SYNC_MOVEL_SPEED_PERCENT = 60
 GRIPPER_SPEED = 30
 GRIPPER_TOLERANCE = 0.005
 GRIPPER_TIMEOUT_S = 2.0
@@ -173,10 +173,7 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码
         """
-        print("================================================")
-        print(f"movep: {pose}")
-        print("================================================")
-        return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=1, connect=0, block=1)
+        return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, 0, 0, 1)
 
     def movej_follow(self, joint):
         """关节空间跟随运动(用于异步流式控制)"""
@@ -185,26 +182,6 @@ class RealmanDriver:
     def movep_follow(self, pose):
         """笛卡尔空间跟随运动(用于异步流式控制)"""
         return self.arm.rm_movep_follow(pose)
-
-    def slow_stop(self) -> int:
-        """
-        轨迹缓停：沿当前规划轨迹减速停止（SDK: rm_set_arm_slow_stop）。
-
-        Returns:
-            SDK 返回码，0 表示成功。
-        """
-        return self.arm.rm_set_arm_slow_stop()
-
-    def emergency_stop(self) -> int:
-        """
-        轨迹急停：关节最快速度停止，当前轨迹不可恢复（SDK: rm_set_arm_stop）。
-
-        与 rm_set_arm_emergency_stop（四代控制器急停状态）不同，此为运动急停。
-
-        Returns:
-            SDK 返回码，0 表示成功。
-        """
-        return self.arm.rm_set_arm_stop()
 
     # =========================
     # 状态获取
@@ -231,35 +208,12 @@ class RealmanDriver:
         - AsyncController:放到 state_loop
         """
         ret, state = self.arm.rm_get_current_arm_state()
-        if ret == 0:
-            return {
-                "pose": np.array(state["pose"]),
-                "joint": np.radians(state["joint"]),
-            }
-        elif ret ==1: 
-            return {
-                "pose": None,
-                "joint": None,
-            }
-        elif ret == -1 or ret == -2:
-            # 通信问题，重试5次
-            for i in range(5):
-                ret, state = self.arm.rm_get_current_arm_state()
-                if ret == 0:
-                    return {
-                        "pose": np.array(state["pose"]),
-                        "joint": np.radians(state["joint"]),
-                    }
-                time.sleep(0.02)
-            return None
-        """
         if ret != 0 or state is None:
             return None
         return {
             "pose": np.array(state["pose"]),
             "joint": np.radians(state["joint"]),
         }
-        """
 
     # =========================
     # 夹爪控制（Modbus）
@@ -397,11 +351,10 @@ class SyncController:
         move_ret = None
         if "joint" in action:
             move_ret = self.driver.movej(action["joint"])
-            
         elif "pose" in action:
             pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
             move_ret = self.driver.movep(pose_eef)
-            
+
         state = self.get_state()
 
         if move_ret not in (None, 0):
@@ -483,16 +436,6 @@ class SyncController:
         time.sleep(0.2)
 
         return self.get_state()
-
-    def slow_stop(self) -> int:
-        """轨迹缓停（与 RealmanDriver.slow_stop 一致）。"""
-        with self._op_lock:
-            return self.driver.slow_stop()
-
-    def emergency_stop(self) -> int:
-        """轨迹急停（与 RealmanDriver.emergency_stop 一致）。"""
-        with self._op_lock:
-            return self.driver.emergency_stop()
 
 
 # =========================
@@ -654,22 +597,6 @@ class AsyncController:
         with self._lock:
             self._pending_gripper = g
 
-    def slow_stop(self) -> int:
-        """轨迹缓停；清空待发送指令，避免停止后控制线程继续下发。"""
-        with self._lock:
-            self._pending_joint = None
-            self._pending_pose = None
-            self._pending_gripper = None
-        return self.driver.slow_stop()
-
-    def emergency_stop(self) -> int:
-        """轨迹急停；清空待发送指令。"""
-        with self._lock:
-            self._pending_joint = None
-            self._pending_pose = None
-            self._pending_gripper = None
-        return self.driver.emergency_stop()
-
     def get_state(self):
         """
         获取缓存状态(非阻塞)
@@ -752,14 +679,6 @@ class RealmanEnv:
     def send_gripper(self, g):
         assert self.mode == "async"
         self.ctrl.send_gripper(g)
-
-    def slow_stop(self) -> int:
-        """轨迹缓停（sync / async 均可用）。"""
-        return self.ctrl.slow_stop()
-
-    def emergency_stop(self) -> int:
-        """轨迹急停（sync / async 均可用）。"""
-        return self.ctrl.emergency_stop()
 
     # -------- 状态 --------
     def get_state(self):

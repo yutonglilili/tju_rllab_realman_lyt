@@ -866,22 +866,22 @@ if __name__ == "__main__":
     env = RealmanEnvWebSim(gripper_open=GRIPPER_OPEN)
 
     rs_env_left = Open3dRealsenseEnv("f1471338")
-    rs_env_right = Open3dRealsenseEnv("f1471193")
+    # rs_env_right = Open3dRealsenseEnv("f1471193")
 
-    with open("data/20260202_170600/camera_results.json", "r") as f:
+    with open("/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json", "r") as f:
         left_cam_results = json.load(f)
 
-    with open("data/20260131_204802/camera_results.json", "r") as f:
-        right_cam_results = json.load(f)
+    # with open("data/20260131_204802/camera_results.json", "r") as f:
+    # right_cam_results = json.load(f)
 
     obs = env.reset()
 
     obs_rs_left = rs_env_left.reset()
-    obs_rs_right = rs_env_right.reset()
+    # obs_rs_right = rs_env_right.reset()
 
     obs_rs_dual = {
         'left_arm_rs_obs': obs_rs_left,
-        'right_arm_rs_obs': obs_rs_right,
+        # 'right_arm_rs_obs': obs_rs_right,
     }
 
     obs.update(obs_rs_dual)
