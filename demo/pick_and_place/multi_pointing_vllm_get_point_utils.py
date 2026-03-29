@@ -416,9 +416,6 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
     )
     generated_text = response.choices[0].message.content
 
-    print("-"*20 + "generated")
-    print(generated_text)
-
     import numpy as np
 
     pointing = (np.array(omni_decode_points(generated_text)) / 1000 * np.array([width, height]))[0]
@@ -539,8 +536,6 @@ def check_grasp_success_vllm(image_rgb, object_name):
 
     result = bool(data["grasp_success"])
 
-    print("Grasp success:", result)
-
     return result
 
 
@@ -650,8 +645,6 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
         return False
 
     result = bool(data["place_success"])
-
-    print("Place success:", result)
 
     return result
 

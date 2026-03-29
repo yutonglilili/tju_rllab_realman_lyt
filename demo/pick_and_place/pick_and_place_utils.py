@@ -768,11 +768,13 @@ def make_target_T(obs, u, v, rs_env, cam_results, ref_T, z_offset=0.0):
     T = copy.deepcopy(ref_T) 
     d = obs["depth"][v, u] / rs_env.meta_obs["depth_scale"]
     
+    """
     # 深度有效性过滤
     if d <= 0 or d > 1.2:
         print("⚠ Warning: Invalid depth, using default 0.6m")
         d = 0.6
-
+    """
+    
     # 投影到基座坐标系
     intrinsic_inv = np.linalg.inv(np.array(rs_env.meta_obs["intrinsic"]))
     xyz_cam = intrinsic_inv @ (np.array([u, v, 1.0]) * d)

@@ -23,7 +23,7 @@ from Robotic_Arm.rm_robot_interface import (
     rm_peripheral_read_write_params_t,
 )
 
-JOINT_MAX_SPEED_DEG_S = 30.0
+JOINT_MAX_SPEED_DEG_S = 100.0
 SYNC_MOVEJ_SPEED_PERCENT = 80
 SYNC_MOVEL_SPEED_PERCENT = 80
 GRIPPER_SPEED = 30
@@ -173,10 +173,22 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码
         """
-        print("================================================")
-        print(f"movep: {pose}")
-        print("================================================")
-        return self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=1, connect=0, block=1)
+        ret = self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=1, connect=0, block=1)
+        if ret == 0:
+            print("第 1 次就解出来了。")
+            return ret
+        if ret != 0:
+            for i in range(5):
+                ret = self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=1, connect=0, block=1)
+                if ret == 0:
+                    print(f"movep 第 {i+1} 次才解出来。")
+                    return ret
+                time.sleep(0.02)
+            print("================================================")
+            print(f"pose: {pose}")
+            print(f"movep sb 了，解了{i}次解不出来。")
+            print("================================================")
+            return ret
 
     def movej_follow(self, joint):
         """关节空间跟随运动(用于异步流式控制)"""
@@ -242,15 +254,19 @@ class RealmanDriver:
                 "joint": None,
             }
         elif ret == -1 or ret == -2:
-            # 通信问题，重试5次
-            for i in range(5):
+            # 通信问题，重试20次
+            for i in range(40):
                 ret, state = self.arm.rm_get_current_arm_state()
                 if ret == 0:
+                    print(f"get_state 第 {i+1} 次才读出来。")
                     return {
                         "pose": np.array(state["pose"]),
                         "joint": np.radians(state["joint"]),
                     }
                 time.sleep(0.02)
+            print("================================================")
+            print(f"通信 sb 了，读了{i+1}次读不出来。")
+            print("================================================")
             return None
         """
         if ret != 0 or state is None:

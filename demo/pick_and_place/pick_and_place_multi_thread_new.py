@@ -1,16 +1,5 @@
 """
-多线程 Pick-and-Place 系统
-
-架构：三线程（感知 + 规划 + 执行）+ 主线程调度
-- 感知线程：持续调用 VLM 打点，检测物体位置变化
-- 规划线程：收到重规划信号后调用 curobo 生成 APPROACH 段轨迹
-- 执行线程：依次执行动作列表中的关节点
-- 主线程：两段式调度（APPROACH → CRITICAL → CHECKING），任务流程控制
-
-关键设计：
-- APPROACH 段：三线程协作，允许物体移动时重规划
-- CRITICAL 段：感知线程暂停，主线程阻塞式执行下压/抓取/提起
-- CHECKING 段：调用 VLM 检测 pick/place 是否成功
+还在添加急停机制中，有点 bug。。。
 """
 
 import copy
@@ -148,12 +137,83 @@ class SharedState:
         self.stop_all = threading.Event()           # 全局停止
         self.pause_perception = threading.Event()   # 暂停感知线程
 
+        self.emergency_stop = threading.Event()     # 急停触发
+        self.estop_done = threading.Event()         # 急停完成（机械臂已停止）
+        self.pause_all = threading.Event()  
+
+# ============================
+# 急停机制
+# ============================
+def trigger_emergency_stop(state, env):
+    # 防止重复触发
+    if state.emergency_stop.is_set():
+        return
+
+    print("\n🚨 急停触发！")
+
+    # 1️⃣ 广播：进入急停状态
+    state.emergency_stop.set()
+    state.pause_all.set()
+    state.abort_execution.set()
+
+    time.sleep(0.05)  # 给线程时间停下来
+
+    # 3️⃣ 硬件急停（最关键）
+    try:
+        env.emergency_stop()      # 立即停轨迹
+        # env.clear_trajectory()    # 清空轨迹
+    except Exception as e:
+        print(f"[急停] 调用失败: {e}")
+
+    # 4️⃣ 等待机械臂真的停下来
+    wait_until_robot_stops(env)
+
+    # 5️⃣ 标记完成
+    state.estop_done.set()
+
+    print("🛑 急停完成，机械臂已静止")
+
+def wait_until_robot_stops(env, vel_threshold=1e-3, timeout=2.0):
+    start = time.time()
+
+    last_joint = None
+
+    while time.time() - start < timeout:
+        robot_state = env.get_state()
+        joint = np.array(robot_state.joint)
+        
+        if last_joint is not None:
+            vel = np.linalg.norm(joint - last_joint)
+            if vel < vel_threshold:
+                return
+        
+        last_joint = joint
+        time.sleep(0.02)
+
+    print("[急停] ⚠️ 等待停止超时")
+
+def recover_from_estop(state):
+    print("\n🔄 正在恢复系统...")
+
+    with state.lock:
+        state.action_list = []
+        state.action_index = 0
+        state.plan_ready.clear()
+        state.need_replan.clear()
+        state.abort_execution.clear()
+        state.execution_done.clear()
+
+    state.emergency_stop.clear()
+    state.estop_done.clear()
+    state.pause_all.clear()
+
+    print("✅ 系统恢复完成")
 
 # ═══════════════════════════════════════════════════
 # 感知线程
 # ═══════════════════════════════════════════════════
 
-def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
+def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
     """
     感知线程：持续以固定频率调用 VLM 打点，检测物体位置变化。
 
@@ -164,6 +224,16 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
     print("[感知线程] 已启动")
 
     while not state.stop_all.is_set():
+        
+        # 🚨 急停恢复
+        if state.estop_done.is_set():
+            recover_from_estop(state)
+            continue
+
+        # 🚨 全局急停暂停（优先级最高）
+        if state.pause_all.is_set():
+            time.sleep(0.05)
+            continue
 
         # --- 暂停检测 ---
         if state.pause_perception.is_set():
@@ -194,10 +264,6 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                 f"Point the {target_name_copy}",
                 save_path=None,  # 不保存调试图片，提升速度
             )
-
-            # 保存打点图片
-            # save_check_image(image_rgb, point_2d, SAVE_DIR)
-            # get_point_vllm 返回 np.array([x, y])
 
             # 3. 2D → 3D 转换
             target_T = make_target_T(
@@ -241,14 +307,11 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                     threshold = MOVE_OBJECT_THRESHOLD if state.task_phase == TaskPhase.PICK else MOVE_CONTAINER_THRESHOLD
 
                     if dist > threshold:
-                        # 目标移动了！
-                        # 感知线程只在 APPROACH 段活跃，所以一定可以触发重规划
-                        state.last_stable_point_3d = new_xyz.copy()
-                        state.point_changed = True
-                        state.abort_execution.set()
-                        state.need_replan.set()
                         label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
-                        print(f"[感知] ⚠️ {label} {target_name_copy} 移动！距离: {dist:.4f}m (阈值={threshold}m) → 重规划")
+                        print(f"[感知] ⚠️ {label} {target_name_copy} 移动 → 触发急停")
+
+                        trigger_emergency_stop(state, env)
+                        continue
                     else:
                         state.point_changed = False
 
@@ -279,7 +342,11 @@ def planning_thread(state, env, curobo_planner, home_T_tcp2base):
         triggered = state.need_replan.wait(timeout=0.5)
         if not triggered:
             continue
-        state.need_replan.clear()
+
+        # 🚨 急停屏障（必须在这里）
+        if state.pause_all.is_set():
+            state.need_replan.clear()
+            continue
 
         # 只在 TRACKING 模式下规划
         with state.lock:
@@ -423,9 +490,19 @@ def execution_thread(state, env):
         if not triggered:
             continue
 
+        # 🚨 急停屏障（第一层）
+        if state.pause_all.is_set():
+            continue
+
         print("[执行] ▶️ 开始执行动作序列")
 
         while not state.stop_all.is_set():
+
+            # 🚨 急停屏障（第二层，最关键）
+            if state.pause_all.is_set():
+                print("[执行] ⛔ 急停中，暂停执行线程")
+                time.sleep(0.05)
+                continue
 
             # 检查中止信号
             if state.abort_execution.is_set():
@@ -459,7 +536,15 @@ def execution_thread(state, env):
             if "gripper" in action:
                 step_action["gripper"] = action["gripper"]
 
+            # 🚨 执行前检查
+            if state.pause_all.is_set():
+                continue
+
             env.step(step_action)
+
+            # 🚨 执行后检查
+            if state.pause_all.is_set():
+                continue
 
             time.sleep(CONTROL_INTERVAL)
 
@@ -470,7 +555,7 @@ def execution_thread(state, env):
 # CRITICAL 段执行器（主线程阻塞式）
 # ═══════════════════════════════════════════════════
 
-def execute_critical_sequence(env, critical_actions):
+def execute_critical_sequence(env, critical_actions, state):
     """
     阻塞式执行 CRITICAL 动作序列（短距离确定性动作）。
     直接在调用线程中顺序执行，不经过多线程。
@@ -480,17 +565,19 @@ def execute_critical_sequence(env, critical_actions):
         critical_actions: [{"pose": xyzrpy, "gripper": float, "wait": float}, ...]
     """
     for i, action in enumerate(critical_actions):
+
+        if state.emergency_stop.is_set():
+            print("[CRITICAL] 🚨 急停中断")
+            return False
+        
         print(f"  [CRITICAL] Step {i+1}/{len(critical_actions)}: "
               f"pose={np.round(action['pose'], 3)}, gripper={action['gripper']:.2f}")
 
         # 先运动到位，再操作夹爪（通过 env.step 统一下发）
         env.step({"pose": action["pose"]})
-        time.sleep(1.0)  # 等待到位（短距离运动，留余量确保稳定）
-
         env.step({"gripper": action["gripper"]})
-        wait_time = action.get("wait", 0)
-        if wait_time > 0:
-            time.sleep(wait_time)
+
+    return True
 
 
 # ═══════════════════════════════════════════════════
@@ -601,7 +688,11 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
 
         # 等待 APPROACH 段执行完毕（到达 pre_pick）
         print("[主线程] 等待 APPROACH 完成...")
-        state.execution_done.wait()
+        while not state.execution_done.is_set():
+            if state.emergency_stop.is_set():
+                print("[主线程] 🚨 急停中断")
+                return False
+            time.sleep(0.05)
         print("[主线程] 📍 已到达 pre_pick 位置")
 
         # ─────────────────────────────────────
@@ -632,7 +723,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
         ]
 
         print("[主线程] 🤏 执行 CRITICAL 序列（下压→闭合→提起）...")
-        execute_critical_sequence(env, critical_actions)
+        execute_critical_sequence(env, critical_actions, state)
         print("[主线程] 🤏 CRITICAL 执行完毕")
 
         # ─────────────────────────────────────
@@ -714,7 +805,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
         ]
 
         print("[主线程] 📤 执行 CRITICAL 序列（下放→松开→抬起）...")
-        execute_critical_sequence(env, critical_actions)
+        execute_critical_sequence(env, critical_actions, state)
         print("[主线程] 📤 CRITICAL 执行完毕")
 
         # ─────────────────────────────────────
@@ -859,7 +950,7 @@ def main():
     threads = [
         threading.Thread(
             target=perception_thread,
-            args=(state, rs_env, cam_results, home_T_tcp2base),
+            args=(state, env, rs_env, cam_results, home_T_tcp2base),
             daemon=True,
             name="PerceptionThread",
         ),

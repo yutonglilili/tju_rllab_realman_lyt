@@ -50,9 +50,9 @@ from multi_pointing_vllm_get_point_utils import (
 # ═══════════════════════════════════════════════════
 
 # 感知参数
-PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
+PERCEPTION_INTERVAL = 0.5       # 打点频率（秒），取决于 VLM 推理速度
 PLACE_Z_OFFSET = 0.10           # place 阶段 z 轴高度偏移（米）
-MOVE_OBJECT_THRESHOLD = 0.03    # 物体移动检测阈值（米，3cm）
+MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
 MOVE_CONTAINER_THRESHOLD = 0.10 # 容器移动检测阈值（米，10cm）
 
 # 规划参数
@@ -65,15 +65,19 @@ GRIPPER_OPEN = 0.09             # 夹爪全开
 GRIPPER_CLOSE = 0.03            # 夹爪全闭
 
 # 任务参数
-MAX_PICK_RETRIES = 3            # pick 最大重试次数
-MAX_PLACE_RETRIES = 3           # place 最大重试次数
+MAX_PICK_RETRIES = 5            # pick 最大重试次数
+MAX_PLACE_RETRIES = 5           # place 最大重试次数
 
 # 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
 CHECK_PICK_SUCCESS_MODE = 1
 CHECK_PLACE_SUCCESS_MODE = 1
 
-CHECK_PICK_CROP_SIZE = 480
-CHECK_PLACE_CROP_SIZE = 560
+CHECK_PICK_CROP_SIZE = 560
+CHECK_PLACE_CROP_SIZE = 640
+
+# 抓取/放置成功距离阈值
+PICK_SUCCESS_DIST_THRESHOLD = 0.1
+PLACE_SUCCESS_DIST_THRESHOLD = 0.20
 
 # 保存图像路径
 SAVE_DIR = "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
@@ -84,8 +88,8 @@ RX_DEGREE_FAR_HIGH = 45
 RX_DEGREE_FAR_LOW = 30
 
 # 预抓取位姿偏移
-APPROACH_Y_OFFSET = 0.03
-APPROACH_Z_OFFSET = 0.06
+APPROACH_Y_OFFSET = 0.04
+APPROACH_Z_OFFSET = 0.08
 APPROACH_LINEAR_STEP = 0.03      # APPROACH 直线插值的单段位移（米）
 APPROACH_ANGULAR_STEP = 0.15     # APPROACH 直线插值的单段姿态变化（弧度）
 
@@ -194,6 +198,9 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                 f"Point the {target_name_copy}",
                 save_path=None,  # 不保存调试图片，提升速度
             )
+
+            # 保存打点图片
+            # save_check_image(image_rgb, point_2d, SAVE_DIR)
             # get_point_vllm 返回 np.array([x, y])
 
             # 3. 2D → 3D 转换
@@ -211,7 +218,7 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                 target_T = make_lift_T(target_T, lift_z=PLACE_Z_OFFSET)
 
             # 修正相机标定偏移（向右偏置 1cm）
-            target_T = make_lift_T(target_T, lift_x=-0.02)
+            target_T = make_lift_T(target_T, lift_x=-0.01)
 
             new_xyz = target_T[:3, 3]
 
@@ -245,7 +252,7 @@ def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
                         state.abort_execution.set()
                         state.need_replan.set()
                         label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
-                        print(f"[感知] ⚠️ {label} {target_name_copy} 移动! dist={dist:.4f}m (阈值={threshold}m) → 重规划")
+                        print(f"[感知] ⚠️ {label} {target_name_copy} 移动！距离: {dist:.4f}m (阈值={threshold}m) → 重规划")
                     else:
                         state.point_changed = False
 
@@ -476,13 +483,17 @@ def execute_critical_sequence(env, critical_actions):
         env: RealmanEnv 实例
         critical_actions: [{"pose": xyzrpy, "gripper": float, "wait": float}, ...]
     """
+
+    print("--------------------------------")
+    print(f"critical_actions: {critical_actions}")
+    print("--------------------------------")
     for i, action in enumerate(critical_actions):
         print(f"  [CRITICAL] Step {i+1}/{len(critical_actions)}: "
               f"pose={np.round(action['pose'], 3)}, gripper={action['gripper']:.2f}")
 
         # 先运动到位，再操作夹爪（通过 env.step 统一下发）
         env.step({"pose": action["pose"]})
-        time.sleep(1.0)  # 等待到位（短距离运动，留余量确保稳定）
+        # time.sleep(1.0)  # 等待到位（短距离运动，留余量确保稳定）
 
         env.step({"gripper": action["gripper"]})
         wait_time = action.get("wait", 0)
@@ -494,11 +505,27 @@ def execute_critical_sequence(env, critical_actions):
 # 结果检测
 # ═══════════════════════════════════════════════════
 
-def do_check_pick_success(rs_env, pick_name, point_2d=None):
-    """调用 VLM 检测 pick 是否成功"""
+def do_check_pick_success(env, rs_env, pick_name, point_2d=None,cam_results=None, home_T_tcp2base=None):
+    """
+    通过两种方式进行自动化检测：
+        1. 通过 VLM 检测抓取是否成功
+        2. 计算抓取点与物体中心点的距离，如果距离小于阈值，则认为抓取成功
+
+    Args:
+        env: RealmanEnv 实例
+        rs_env: Open3dRealsenseEnv 实例
+        pick_name: 物体名称
+        point_2d: 抓取点 2D 坐标
+        cam_results: 相机结果
+        home_T_tcp2base: home 位姿矩阵
+    Returns:
+        bool: 抓取是否成功
+    """
 
     if CHECK_PICK_SUCCESS_MODE == 1:
         print("[检测] 检查抓取是否成功...")
+
+        # 1. 通过 VLM 检测抓取是否成功
         obs = rs_env.step()
         image_rgb = obs["rgb"]
         image_for_check = crop_image_around_point(
@@ -507,26 +534,55 @@ def do_check_pick_success(rs_env, pick_name, point_2d=None):
             crop_size=CHECK_PICK_CROP_SIZE,
         )
         save_check_image(image_for_check, prefix="pick", object_name=pick_name, save_dir=SAVE_DIR)
-        return check_grasp_success_vllm(image_for_check, pick_name)
+
+        is_success_1 = check_grasp_success_vllm(image_for_check, pick_name)
+
+        # 2. 计算抓取点与物体中心点的距离
+        object_2d = get_point_vllm(image_rgb,f"Point the {pick_name}",save_path=None)
+        print("--------------------------------")
+        print(f"object_2d: {object_2d}")
+        object_current_T = make_target_T(obs,int(object_2d[0]),int(object_2d[1]),rs_env,cam_results,home_T_tcp2base)
+        object_xyzrpy = realman_xyzrpy_from_T(object_current_T)
+        print("--------------------------------")
+
+        tcp_current_T = make_target_T(obs,int(point_2d[0]),int(point_2d[1]),rs_env,cam_results,home_T_tcp2base)
+        tcp_xyzrpy = realman_xyzrpy_from_T(tcp_current_T)
+
+        dist = np.linalg.norm(object_xyzrpy[:3] - tcp_xyzrpy[:3])
+        if dist < PICK_SUCCESS_DIST_THRESHOLD:
+            is_success_2 = True
+        else:
+            is_success_2 = False
+        
+        if is_success_1 and is_success_2:
+            return True
+        elif is_success_1:
+            print(f"VLM 检测抓取成功，距离检测抓取失败，抓取成功!")
+            return True
+        else:
+            print(f"VLM 检测抓取失败，距离检测抓取失败，抓取失败!")
+            return False
 
     elif CHECK_PICK_SUCCESS_MODE == 2:
         print("[检测] 跳过 pick 检测")
         return True
-
+    
     else:
         print("[检测] 人工检测 pick 是否成功")
         while True:
-            key = input("Pick 成功? (y/n): ").strip().lower()
+            key = input("Pick 成功? (y/n): ")
             if key == 'y':
                 return True
             elif key == 'n':
                 return False
 
 
-def do_check_place_success(rs_env, pick_name, place_name, point_2d=None):
+def do_check_place_success(rs_env, pick_name, place_name, point_2d=None,cam_results=None, home_T_tcp2base=None):
     """调用 VLM 检测 place 是否成功"""
 
     if CHECK_PLACE_SUCCESS_MODE == 1:
+        
+        # 1. 通过 VLM 检测放置是否成功
         print("[检测] 检查放置是否成功...")
         obs = rs_env.step()
         image_rgb = obs["rgb"]
@@ -535,9 +591,31 @@ def do_check_place_success(rs_env, pick_name, place_name, point_2d=None):
             point_2d,
             crop_size=CHECK_PLACE_CROP_SIZE,
         )
-        save_check_image(image_for_check, prefix="place", object_name=pick_name,
-                         container_name=place_name, save_dir=SAVE_DIR)
-        return check_place_success_vllm(image_for_check, pick_name, place_name)
+        save_check_image(image_for_check, prefix="place", object_name=pick_name, container_name=place_name, save_dir=SAVE_DIR)
+        
+        is_success_1 = check_place_success_vllm(image_for_check, pick_name, place_name)
+        
+        # 2. 计算抓取点与物体中心点的距离
+        object_2d = get_point_vllm(image_rgb,f"Point the {pick_name}",save_path=None)
+        object_current_T = make_target_T(obs,int(object_2d[0]),int(object_2d[1]),rs_env,cam_results,home_T_tcp2base)
+        object_xyzrpy = realman_xyzrpy_from_T(object_current_T)
+            
+        container_2d = get_point_vllm(image_rgb,f"Point the {place_name}",save_path=None)
+        container_current_T = make_target_T(obs,int(container_2d[0]),int(container_2d[1]),rs_env,cam_results,home_T_tcp2base)
+        container_xyzrpy = realman_xyzrpy_from_T(container_current_T) 
+
+        dist = np.linalg.norm(object_xyzrpy[:3] - container_xyzrpy[:3])
+
+        is_success_2 = True if dist < PLACE_SUCCESS_DIST_THRESHOLD else False
+        
+        if is_success_1 and is_success_2:
+            return True
+        elif is_success_1:
+            print(f"VLM 检测放置成功，距离检测放置失败，放置成功!")
+            return True
+        else:
+            print(f"VLM 检测放置失败，距离检测放置失败，放置失败!")
+            return False
 
     elif CHECK_PLACE_SUCCESS_MODE == 2:
         print("[检测] 跳过 place 检测")
@@ -624,7 +702,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
 
         critical_actions = [
             {"pose": pick_xyzrpy,       "gripper": GRIPPER_OPEN,  "wait": 0.0},   # 下压到物体位置
-            {"pose": pick_xyzrpy,       "gripper": GRIPPER_CLOSE, "wait": 0.5},   # 闭合夹爪
+            {"pose": pick_xyzrpy,       "gripper": GRIPPER_CLOSE, "wait": 0.0},   # 闭合夹爪
             {"pose": post_pick_xyzrpy,  "gripper": GRIPPER_CLOSE, "wait": 0.0},   # 提起
         ]
 
@@ -640,7 +718,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
             check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
             # 感知线程仍然暂停
 
-        pick_success = do_check_pick_success(rs_env, task['pick'], point_2d=check_point_2d)
+        pick_success = do_check_pick_success(env,rs_env, task['pick'], point_2d=check_point_2d,cam_results=cam_results, home_T_tcp2base=home_T_tcp2base)
 
         if pick_success:
             print("✅ Pick 成功!")
@@ -706,7 +784,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
 
         critical_actions = [
             {"pose": place_xyzrpy,      "gripper": GRIPPER_CLOSE, "wait": 0.0},   # 下放
-            {"pose": place_xyzrpy,      "gripper": GRIPPER_OPEN,  "wait": 0.5},   # 松开夹爪
+            {"pose": place_xyzrpy,      "gripper": GRIPPER_OPEN,  "wait": 0.0},   # 松开夹爪
             {"pose": post_place_xyzrpy, "gripper": GRIPPER_OPEN,  "wait": 0.0},   # 抬起
         ]
 
@@ -726,6 +804,8 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
             task['pick'],
             task['place'],
             point_2d=check_point_2d,
+            cam_results=cam_results,
+            home_T_tcp2base=home_T_tcp2base,
         )
 
         if place_success:
@@ -831,7 +911,8 @@ def main():
     # 4. 指令拆解
     # ============================
 
-    instruction = "Pick the white ball and place it on the blue plate, then pick the carrot and place it on the blue plate."
+    instruction = "Pick the white ball and place it on the pink plate, then pick the carrot and place it on the pink plate, then pick the glue stick and place it on the pink plate."
+    # instruction = "Pick the white ball and place it on the basket, then pick the carrot and place it on the basket, pick the yellow ball and place it on the basket, then pick the glue stick and place it on the basket, pick the rubics cube and place it on the basket."
     print(f"\n[任务] 指令: {instruction}")
     print("[任务] 调用 VLM 拆解指令...")
 
