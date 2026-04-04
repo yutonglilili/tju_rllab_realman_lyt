@@ -1,0 +1,1024 @@
+"""
+VLM inference utilities for robot manipulation.
+本脚本包含需要调用模型推理的函数及其辅助函数。
+"""
+import json
+import re
+import ast
+from typing import Any, List
+import numpy as np
+import cv2
+from PIL import Image
+
+from pointing_vllm_client import VLLMOnlineClient
+
+# =========================================================
+# Global VLM Configuration
+# =========================================================
+
+BASE_URL = "http://172.28.102.11:22002/v1"
+API_KEY = "EMPTY"
+MODEL_NAME = "Embodied-R1.5-SFT-0128"
+
+TMP_IMAGE_PATH = "tmp_vlm_image.png"
+
+_global_client = None
+
+
+def get_vlm_client():
+    """Singleton VLM client"""
+    global _global_client
+
+    if _global_client is None:
+        _global_client = VLLMOnlineClient(
+            base_url=BASE_URL,
+            api_key=API_KEY,
+            model_name=MODEL_NAME
+        )
+
+    return _global_client
+
+
+# =========================================================
+# Utility Functions
+# =========================================================
+
+def save_image_tmp(image_rgb):
+    """Save image to temporary file"""
+    img = image_rgb.copy()
+
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+    Image.fromarray(img).save(TMP_IMAGE_PATH)
+
+    return TMP_IMAGE_PATH
+
+def extract_first_json(text: str):
+    """Extract first JSON object from model output"""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+
+    if match is None:
+        raise RuntimeError("No JSON found in model output")
+
+    json_str = match.group()
+
+    try:
+        return json.loads(json_str)
+    except Exception:
+        return ast.literal_eval(json_str)
+
+
+# =========================================================
+# Point Decoding
+# =========================================================
+
+def omni_decode_points(output: str) -> List[List[float]]:
+    """
+    通用解码器：从 VLM 模型的字符串输出中解析 2D 点坐标。
+    
+    这是一个多策略解析函数，能够处理各种 VLM 模型（Qwen、GPT-4V、XML 风格等）的输出格式。
+    函数会依次尝试多种解析策略，直到成功提取到点坐标为止。
+    
+    支持的格式：
+    1. Qwen/JSON 字典格式: '[{"point_2d": [[x, y]], "label": "target"}]'
+    2. 列表/元组格式: '[[x1, y1], [x2, y2]]' 或 '[(x1, y1)]'
+    3. XML 标签格式: '<point>[[x, y]]</point>' 或 '<points>[x1,y1],[x2,y2]</points>'
+    4. XML 属性格式: '<point x="63.5" y="44.5" alt="label">text</point>'
+    5. 自然语言格式: 'The point is at 100, 200'
+    6. Markdown 代码块格式: '```json\n[x, y]\n```'
+    
+    解析策略（按顺序尝试）：
+    - 策略1: 从 XML 属性中提取坐标（如 x="10" y="20"）
+    - 策略2: 预处理文本，去除 Markdown 和 XML 标签
+    - 策略3: 使用 Python 字面量解析（ast.literal_eval）处理结构化数据
+    - 策略4: 使用正则表达式作为兜底方案，从自然语言中提取坐标
+    
+    参数:
+        output: VLM 模型输出的原始字符串
+    
+    返回:
+        List[List[float]]: 点坐标列表，每个元素为 [x, y]。如果未找到任何点，返回空列表。
+    
+    使用示例:
+        >>> omni_decode_points('[{"point_2d": [[100, 200]]}]')
+        [[100.0, 200.0]]
+        >>> omni_decode_points('The point is at (50, 75)')
+        [[50.0, 75.0]]
+    """
+    if not isinstance(output, str) or not output.strip():
+        return []
+
+    points = []
+
+    # --- Strategy 1: XML Attribute Extraction ---
+    # Matches: <point x="10" y="20"> or <point y="20" x="10">
+    if '<point' in output.lower():
+        points = _extract_from_xml_attributes(output)
+        if points:
+            return points
+
+    # --- Strategy 2: Clean Markdown & XML Tags ---
+    text = _preprocess_text(output)
+
+    # --- Strategy 3: Python Literal / JSON Parsing ---
+    # We try ast.literal_eval first because models often use single quotes or
+    # Python-like structures that valid JSON doesn't support.
+    try:
+        # Help literal_eval by removing common prefix labels like "Output: "
+        clean_text = re.sub(r'^[a-zA-Z0-9_\s]+:\s*', '', text)
+        data = ast.literal_eval(clean_text)
+        points = _parse_structured_data(data)
+        if points:
+            return points
+    except (ValueError, SyntaxError, MemoryError):
+        pass
+
+    # --- Strategy 4: Regex Fallback (The "Catch-All") ---
+    # Matches: [10, 20], (10, 20), or even raw 10.5, 20.1
+    # This captures points embedded in natural language.
+    points = _extract_points_by_regex(text)
+
+    return points
+
+def _preprocess_text(text: str) -> str:
+    """
+    文本预处理函数：清理和提取文本中的有效内容。
+    
+    该函数用于在解析点坐标之前清理文本，主要做两件事：
+    1. 去除 Markdown 代码块包裹（如 ```json ... ```）
+    2. 从 XML 标签中提取内容（如 <point>...</point>）
+    
+    这样可以让后续的解析函数更容易处理纯坐标数据，而不受格式标记的干扰。
+    
+    参数:
+        text: 需要预处理的原始文本字符串
+    
+    返回:
+        str: 清理后的文本，去除 Markdown 和 XML 标签包裹，只保留核心内容
+    
+    示例:
+        >>> _preprocess_text('```json\n[100, 200]\n```')
+        '[100, 200]'
+        >>> _preprocess_text('<point>[50, 75]</point>')
+        '[50, 75]'
+    """
+    # 去除 Markdown 代码块（支持 json、python、html 等语言标记）
+    text = re.sub(r'```(?:json|python|html)?\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
+
+    # 从 <point> 或 <points> 标签中提取内容（如果存在）
+    tag_match = re.search(r'<(?:point|points)>(.*?)</(?:point|points)>', text, re.DOTALL | re.IGNORECASE)
+    if tag_match:
+        text = tag_match.group(1)
+
+    return text.strip()
+
+def _parse_structured_data(data: Any) -> List[List[float]]:
+    """
+    递归解析结构化数据，从 Python 对象（字典、列表等）中提取点坐标。
+    
+    该函数采用递归策略，能够处理各种嵌套的数据结构：
+    - 字典：查找常见的键名（如 "point_2d", "points", "point", "coordinates"）
+    - 列表/元组：识别单个点 [x, y] 或多个点的列表 [[x1, y1], [x2, y2]]
+    - 嵌套结构：递归处理多层嵌套的数据
+    
+    参数:
+        data: 待解析的 Python 对象，可以是字典、列表、元组等
+    
+    返回:
+        List[List[float]]: 提取到的点坐标列表，每个元素为 [x, y]
+    
+    示例:
+        >>> _parse_structured_data({"point_2d": [[100, 200]]})
+        [[100.0, 200.0]]
+        >>> _parse_structured_data([[10, 20], [30, 40]])
+        [[10.0, 20.0], [30.0, 40.0]]
+        >>> _parse_structured_data([50, 75])
+        [[50.0, 75.0]]
+    """
+    points = []
+
+    if isinstance(data, dict):
+        # 处理 Qwen/VLM 常用的键名
+        for key in ["point_2d", "points", "point", "coordinates"]:
+            if key in data:
+                return _parse_structured_data(data[key])
+
+    elif isinstance(data, (list, tuple)):
+        if not data:
+            return []
+
+        # 检查是否为单个点格式: [x, y]
+        if len(data) == 2 and all(isinstance(x, (int, float)) for x in data):
+            return [[float(data[0]), float(data[1])]]
+
+        # 检查是否为嵌套结构: [[x, y], ...] 或 [{"point_2d": [x, y]}, ...]
+        for item in data:
+            extracted = _parse_structured_data(item)
+            if extracted:
+                points.extend(extracted)
+
+    return points
+
+def _extract_from_xml_attributes(text: str) -> List[List[float]]:
+    """
+    从 XML 属性或特殊格式的文本中提取点坐标。
+    
+    该函数使用多种正则表达式模式来匹配不同格式的坐标表示：
+    1. Click(x, y) 格式：如 "Click(100.5, 200.3)"
+    2. 括号坐标格式：如 "(100.5, 200.3)" 或 "(100.5,200.3)"
+    3. XML 属性格式：如 'x="100" y="200"' 或 'x1="100.5" y2="200.3"'
+    4. 特殊格式：如 "p = 100, 200" 或 "1 = 100, 200"（坐标需要除以10）
+    
+    参数:
+        text: 包含坐标信息的文本字符串
+    
+    返回:
+        List[List[float]]: 提取到的所有点坐标列表
+    
+    示例:
+        >>> _extract_from_xml_attributes('<point x="100" y="200">')
+        [[100.0, 200.0]]
+        >>> _extract_from_xml_attributes('Click(50.5, 75.3)')
+        [[50.5, 75.3]]
+    """
+    all_points = []
+    
+    # 模式1: Click(x, y) 格式
+    for match in re.finditer(r"Click\(([0-9]+\.[0-9]), ?([0-9]+\.[0-9])\)", text):
+        try:
+            point = [float(match.group(i)) for i in range(1, 3)]
+        except ValueError:
+            pass
+        else:
+            all_points.append(point)
+
+    # 模式2: 括号坐标格式 (x, y) 或 (x,y)
+    for match in re.finditer(r"\(([0-9]+\.[0-9]),? ?([0-9]+\.[0-9])\)", text):
+        try:
+            point = [float(match.group(i)) for i in range(1, 3)]
+        except ValueError:
+            pass
+        else:
+            all_points.append(point)
+    
+    # 模式3: XML 属性格式 x="100" y="200" 或 x1="100.5" y2="200.3"
+    for match in re.finditer(r'x\d*="\s*([0-9]+(?:\.[0-9]+)?)"\s+y\d*="\s*([0-9]+(?:\.[0-9]+)?)"', text):
+        try:
+            point = [float(match.group(i)) for i in range(1, 3)]
+        except ValueError:
+            pass
+        else:
+            all_points.append(point)
+    
+    # 模式4: 特殊格式 p = 100, 200 或 1 = 100, 200（坐标需要除以10转换为实际值）
+    for match in re.finditer(r'(?:\d+|p)\s*=\s*([0-9]{3})\s*,\s*([0-9]{3})', text):
+        try:
+            point = [int(match.group(i)) / 10.0 for i in range(1, 3)]
+        except ValueError:
+            pass
+        else:
+            all_points.append(point)
+
+    return all_points
+
+def _extract_points_by_regex(text: str) -> List[List[float]]:
+    """
+    使用正则表达式从文本中提取点坐标（兜底策略）。
+    
+    这是解析函数的最后一道防线，当其他解析策略都失败时使用。
+    该函数能够从自然语言或松散格式的文本中提取坐标对。
+    
+    提取策略（按优先级）：
+    1. 优先匹配带括号的坐标：如 [x, y] 或 (x, y)
+    2. 如果未找到括号格式，则匹配纯数字对：如 "100, 200"
+    
+    注意：为了避免重复提取，只有在没有找到括号格式时才会尝试提取纯数字对。
+    
+    参数:
+        text: 包含坐标信息的文本字符串
+    
+    返回:
+        List[List[float]]: 提取到的点坐标列表
+    
+    示例:
+        >>> _extract_points_by_regex('The point is at [100, 200]')
+        [[100.0, 200.0]]
+        >>> _extract_points_by_regex('Coordinates: 50, 75')
+        [[50.0, 75.0]]
+        >>> _extract_points_by_regex('Points: (10, 20) and 30, 40')
+        [[10.0, 20.0], [30.0, 40.0]]
+    """
+    points = []
+    
+    # 模式1: 匹配带括号的坐标格式 [x, y] 或 (x, y)
+    bracket_pattern = r'[\[\(]\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*[\]\)]'
+    matches = re.findall(bracket_pattern, text)
+
+    if matches:
+        for m in matches:
+            points.append([float(m[0]), float(m[1])])
+    else:
+        # 兜底策略：在文本中查找 "数字, 数字" 模式
+        # 只有在没有找到括号格式时才使用，避免重复提取
+        raw_pattern = r'(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)'
+        matches = re.findall(raw_pattern, text)
+        for m in matches:
+            points.append([float(m[0]), float(m[1])])
+
+    return points
+
+
+# =========================================================
+# Task Parsing
+# =========================================================
+def parse_multi_pick_place_tasks(text_prompt):
+    """Robust multi-step pick & place task parser (production-ready)"""
+
+    import json
+    import re
+    import ast
+
+    # ====== VLM call ======
+    base_url = "http://172.28.102.11:22002/v1"
+    api_key = "EMPTY"
+    model_name = "Embodied-R1.5-SFT-0128"
+
+    from pointing_vllm_client import VLLMOnlineClient
+    client = VLLMOnlineClient(
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model_name
+    )
+
+    prompt = f"""
+        You are a robot task planner.
+
+        Given a human instruction, decompose it into multiple sequential pick-and-place tasks.
+
+        You MUST output ONLY JSON.
+        The output MUST be a JSON object (NOT a list).
+
+        Required format:
+        {{
+            "num_tasks": N,
+            "tasks": [
+                {{"pick": "...", "place": "..."}}
+            ]
+        }}
+
+        Instruction:
+        {text_prompt}
+    """
+
+    response = client.client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    # =========================================================
+    # Step 1: 去 markdown 包裹
+    # =========================================================
+    content = re.sub(r"^```(?:json)?", "", content.strip(), flags=re.IGNORECASE)
+    content = re.sub(r"```$", "", content.strip())
+
+    # =========================================================
+    # Step 2: 修复 JSON
+    # =========================================================
+    def _fix_broken_json(s: str) -> str:
+        s = s.strip()
+        s = re.sub(r"\s+", " ", s)
+
+        if s.count('[') > s.count(']'):
+            s += ']' * (s.count('[') - s.count(']'))
+
+        if s.count('{') > s.count('}'):
+            s += '}' * (s.count('{') - s.count('}'))
+
+        s = re.sub(r"[^\}\]]+$", "", s)
+        return s
+
+    content = _fix_broken_json(content)
+
+    # =========================================================
+    # Step 3: JSON 解析
+    # =========================================================
+    try:
+        data = json.loads(content)
+    except Exception:
+        try:
+            data = ast.literal_eval(content)
+        except Exception as e:
+            raise RuntimeError(f"❌ Failed to parse:\n{content}") from e
+
+    # =========================================================
+    # Step 4: 直接获取 tasks，不 unwrap 最外层
+    # =========================================================
+    if isinstance(data, dict) and "tasks" in data:
+        tasks = data["tasks"]
+    elif isinstance(data, list):
+        tasks = data
+        data = {"tasks": tasks}
+    else:
+        raise ValueError(f"❌ Invalid structure:\n{data}")
+
+    # 如果 tasks 是 dict，wrap 成 list
+    if isinstance(tasks, dict):
+        tasks = [tasks]
+
+    # =========================================================
+    # Step 5: 清洗任务
+    # =========================================================
+    cleaned_tasks = []
+
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            print(f"⚠ Skip invalid task {i}: {t}")
+            continue
+
+        pick = t.get("pick", None)
+        place = t.get("place", None)
+
+        # 自动修复字段（兼容奇葩输出）
+        if pick is None:
+            for k in t.keys():
+                if "pick" in k.lower():
+                    pick = t[k]
+
+        if place is None:
+            for k in t.keys():
+                if "place" in k.lower():
+                    place = t[k]
+
+        if pick is None or place is None:
+            print(f"⚠ Skip broken task {i}: {t}")
+            continue
+
+        cleaned_tasks.append({
+            "pick": str(pick).strip(),
+            "place": str(place).strip()
+        })
+
+    if len(cleaned_tasks) == 0:
+        raise RuntimeError("❌ No valid tasks parsed")
+
+    # =========================================================
+    # Step 6: 输出标准格式
+    # =========================================================
+    result = {
+        "num_tasks": len(cleaned_tasks),
+        "tasks": cleaned_tasks
+    }
+
+    print("✅ Parsed task plan:", result)
+
+    return result
+
+
+# =========================================================
+# Get 2D Point
+# =========================================================
+def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path="debug_pointing_vllm.png", color=(0, 0, 255)):
+    # Model and server configuration
+    base_url = "http://172.28.102.11:22002/v1"
+    api_key = "EMPTY"
+    model_name = "Embodied-R1.5-SFT-0128"
+
+    # Sampling parameters
+    greedy = False
+    seed = 3407
+    top_p = 0.8
+    top_k = 20
+    temperature = 0.7
+    repetition_penalty = 1.0
+    presence_penalty = 1.5
+    max_tokens = 4096  # out_seq_length
+
+    # Video processing parameters (for mm_processor_kwargs)
+    video_fps = 2  # Frames per second for video sampling
+    video_do_sample_frames = True  # Enable frame sampling
+
+    # Initialize client
+    client = VLLMOnlineClient(
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model_name
+    )
+
+    height, width = image_rgb.shape[:2]
+
+    tmp_image_path = "vllm_image.png"
+
+    Image.fromarray(image_rgb).save(tmp_image_path)
+    
+    test_case = {
+    'idx': 2,
+    'answer': '',
+    'prompt': f"""
+        Provide ONE 2D point for: {text_prompt}
+
+        Rules:
+            Output JSON only: [{{"point_2d":[x,y]}}]
+            x,y must be in [0,1000]
+
+        If the target is a basket:
+            The point MUST be inside the basket
+            The point MUST NOT be on any object inside the basket
+            Prefer a position near the center of the basket
+        If the target is a normal object:
+            Choose a point near the top-center of the object
+            Avoid edges of the object
+        Return JSON only.
+    """,
+    'image': tmp_image_path,
+    'video': '',
+    'type': 'single_image'
+}
+
+    # Build messages for this test case
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    # Generate output
+    # Use mm_processor_kwargs for video processing (safe to use)
+    # Note: Do NOT add top_k, repetition_penalty, presence_penalty - they cause crashes
+    response = client.client.chat.completions.create(
+        model=client.model_name,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        seed=seed,
+        extra_body={
+            "mm_processor_kwargs": {
+                "fps": video_fps,
+                "do_sample_frames": video_do_sample_frames
+            }
+        }
+    )
+    generated_text = response.choices[0].message.content
+
+    import numpy as np
+
+    pointing = (np.array(omni_decode_points(generated_text)) / 1000 * np.array([width, height]))[0]
+
+    if save_path:
+        img = cv2.imread(test_case["image"])
+        img = cv2.circle(img, (int(pointing[0]), int(pointing[1])), 5, color, -1)
+        cv2.imwrite(save_path, img)
+
+    return pointing # x, y following opencv camera coord
+
+
+# =========================================================
+# Grasp Success Check
+# =========================================================
+def check_grasp_success_vllm(image_rgb, object_name):
+
+    base_url = "http://172.28.102.11:22002/v1"
+    api_key = "EMPTY"
+    model_name = "Embodied-R1.5-SFT-0128"
+
+    client = VLLMOnlineClient(
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model_name
+    )
+
+    # =========================
+    # 图像处理（关键）
+    # =========================
+
+    img = image_rgb.copy()
+
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+    img = np.ascontiguousarray(img)
+
+    tmp_image_path = "check_grasp_image.png"
+    Image.fromarray(img).save(tmp_image_path)
+
+    # print("Saved grasp check image:", tmp_image_path)
+
+    # =========================
+    # Prompt
+    # =========================
+
+    prompt = f"""
+        You are a robot perception system.
+
+        The robot attempted to grasp an object.
+
+        Target object: {object_name}
+
+        Look carefully at the image and determine whether the robot gripper is currently holding the object.
+
+        SUCCESS conditions:
+        - The object is clearly inside the robot gripper
+        - The object is lifted from the table
+
+        FAILURE conditions:
+        - The object is still on the table
+        - The gripper is empty
+        - The object is not inside the gripper
+
+        Return JSON only.
+
+        Example:
+        {{
+        "grasp_success": true
+        }}
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": tmp_image_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        max_tokens=200,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    # print("[VLM grasp check raw output]")
+    # print(content)
+
+    # =========================
+    # 提取JSON
+    # =========================
+
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+
+    if match is None:
+        print("❌ No JSON detected in model output")
+        return False
+
+    json_str = match.group()
+
+    try:
+        data = json.loads(json_str)
+    except Exception:
+        print("❌ JSON parse failed")
+        return False
+
+    if "grasp_success" not in data:
+        print("❌ Invalid output format")
+        return False
+
+    result = bool(data["grasp_success"])
+
+    return result
+
+
+# =========================================================
+# Place Success Check
+# =========================================================
+def check_place_success_vllm(image_rgb, object_name, container_name):
+
+    base_url = "http://172.28.102.11:22002/v1"
+    api_key = "EMPTY"
+    model_name = "Embodied-R1.5-SFT-0128"
+
+    client = VLLMOnlineClient(
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model_name
+    )
+
+    # =========================
+    # 图像处理
+    # =========================
+
+    img = image_rgb.copy()
+
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+    img = np.ascontiguousarray(img)
+
+    tmp_image_path = "check_place_image.png"
+    Image.fromarray(img).save(tmp_image_path)
+
+    # print("Saved place check image:", tmp_image_path)
+
+    # =========================
+    # Prompt
+    # =========================
+
+    prompt = f"""
+        You are a robot perception system.
+
+        The robot attempted to place an object into a container.
+
+        Object: {object_name}
+        Target container: {container_name}
+
+        Look at the image and determine whether the object is already inside the container.
+
+        SUCCESS conditions:
+        - The object is clearly inside the container.
+
+        FAILURE conditions:
+        - The object is outside the container.
+        - The object is still in the robot gripper.
+
+        Return JSON only.
+
+        Example:
+        {{
+        "place_success": true
+        }}
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": tmp_image_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        max_tokens=200,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    # ("[VLM place check raw output]")
+    # print(content)
+
+    # =========================
+    # 提取JSON
+    # =========================
+
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+
+    if match is None:
+        print("❌ No JSON detected in model output")
+        return False
+
+    json_str = match.group()
+
+    try:
+        data = json.loads(json_str)
+    except Exception:
+        print("❌ JSON parse failed")
+        return False
+
+    if "place_success" not in data:
+        print("❌ Invalid output format")
+        return False
+
+    result = bool(data["place_success"])
+
+    return result
+
+
+# =========================================================
+# Generate Task Table
+# =========================================================
+def generate_task_table_from_scene(
+    image_rgb,
+    instruction,
+    pick_candidates=None,
+    place_candidates=None
+):
+    """
+    Generate pick-place task table from image + instruction.
+
+    Args:
+        image_rgb: RGB numpy image
+        instruction: natural language instruction
+        pick_candidates: optional list of pickable objects
+        place_candidates: optional list of place targets
+
+    Returns:
+        dict:
+        {
+            "num_tasks": N,
+            "tasks":[
+                {"pick":"...", "place":"..."}
+            ]
+        }
+    """
+
+    client = get_vlm_client()
+
+    img_path = save_image_tmp(image_rgb)
+
+    # 默认候选列表
+    if pick_candidates is None:
+        pick_candidates = [
+            "baseball",
+            "tennis ball",
+            "cup",
+            "carrot",
+            "apple",
+            "mouse",
+            "tiddy bear",
+            "toy horse",
+            "brush"
+        ]
+
+    if place_candidates is None:
+        place_candidates = [
+            "pink plate",
+            "white plate",
+            "blue bowl",
+            "basket"
+        ]
+
+    prompt = f"""
+        You are a robot task planner.
+
+        You are given:
+        1. A tabletop RGB image
+        2. A human instruction
+
+        Your job is to generate a sequence of pick-and-place tasks.
+
+        Instruction:
+        {instruction}
+
+        Pick candidates (preferred names):
+        {pick_candidates}
+
+        Place candidates (preferred names):
+        {place_candidates}
+
+        Rules:
+
+        1. Identify objects mentioned in the instruction and visible in the image.
+        2. If an object matches a candidate name, use that name.
+        3. If the object is not in the candidate list, you may create a new object name.
+        4. Each task must contain ONE pick object and ONE place target.
+        5. Tasks must be executable sequentially by a robot.
+
+        Return JSON ONLY.
+
+        Format:
+
+        {{
+        "num_tasks": N,
+        "tasks":[
+            {{
+                "pick":"object_name",
+                "place":"target_name"
+            }}
+        ]
+        }}
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    # 提取 JSON
+    data = extract_first_json(content)
+
+    # -----------------------------
+    # 结构清洗
+    # -----------------------------
+
+    tasks = data.get("tasks", [])
+
+    if isinstance(tasks, dict):
+        tasks = [tasks]
+
+    cleaned_tasks = []
+
+    for t in tasks:
+
+        if not isinstance(t, dict):
+            continue
+
+        pick = t.get("pick", None)
+        place = t.get("place", None)
+
+        if pick is None or place is None:
+            continue
+
+        cleaned_tasks.append({
+            "pick": str(pick).strip(),
+            "place": str(place).strip()
+        })
+
+    result = {
+        "num_tasks": len(cleaned_tasks),
+        "tasks": cleaned_tasks
+    }
+
+    print("✅ Generated task table:", result)
+
+    return result
+
+
+# =========================================================
+# Check Instruction Completion
+# =========================================================
+def check_instruction_complete(image_rgb, instruction):
+    """
+    Check whether the high-level instruction has been completed.
+
+    Returns:
+        (completed: bool, reason: str)
+    """
+
+    client = get_vlm_client()
+
+    img_path = save_image_tmp(image_rgb)
+
+    prompt = f"""
+        You are a robot task checker.
+
+        Given ONE tabletop RGB image,
+        determine whether the following instruction is completed.
+
+        Instruction:
+        {instruction}
+
+        Return JSON only.
+
+        {{
+        "completed": true or false,
+        "reason": "short explanation"
+        }}
+    """
+
+    test_case = {
+        "idx": 1,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=200,
+        temperature=0.1,
+    )
+
+    content = response.choices[0].message.content
+
+    data = extract_first_json(content)
+
+    completed = bool(data.get("completed", False))
+    reason = str(data.get("reason", "")).strip()
+
+    return completed, reason
+
+
+if __name__ == "__main__":
+    print(get_point_vllm(np.array(Image.open("aff.png")), "you need to grasp the mug"))
+
+

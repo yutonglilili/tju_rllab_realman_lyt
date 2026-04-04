@@ -263,7 +263,7 @@ class RealsenseViewer:
 
 def main():
     parser = argparse.ArgumentParser(description="RealSense 相机可视化工具")
-    parser.add_argument("--serial", type=str, default="f1471338",
+    parser.add_argument("--serial", type=str, default="342522073663",
                         help="相机序列号")
     parser.add_argument("--save_dir", type=str, default="captured_frames",
                         help="保存帧的目录")
@@ -277,5 +277,5 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-#f1471193
+# f1471338
+# f1471193
