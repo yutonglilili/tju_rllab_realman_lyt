@@ -1,18 +1,9 @@
 """
-多线程 Pick-and-Place 系统
-
-架构：三线程（感知 + 规划 + 执行）+ 主线程调度
-- 感知线程：持续调用 VLM 打点，检测物体位置变化
-- 规划线程：收到重规划信号后调用 curobo 生成 APPROACH 段轨迹
-- 执行线程：依次执行动作列表中的关节点
-- 主线程：两段式调度（APPROACH → CRITICAL → CHECKING），任务流程控制
-
-关键设计：
-- APPROACH 段：三线程协作，允许物体移动时重规划
-- CRITICAL 段：感知线程暂停，主线程阻塞式执行下压/抓取/提起
-- CHECKING 段：调用 VLM 检测 pick/place 是否成功
+此版本支持连续 pnp 任务，并在每个任务中使用感知，规划，执行三线程协同工作，实现物体跟踪，错误检测，重规划等功能。
+后续考虑优化：
+1. 加入 curobo 规划器，实现更精确的轨迹规划；
+2. 实现
 """
-
 import copy
 import json
 import os
@@ -51,9 +42,9 @@ from multi_pointing_vllm_get_point_utils import (
 
 # 感知参数
 PERCEPTION_INTERVAL = 0.5       # 打点频率（秒），取决于 VLM 推理速度
-PLACE_Z_OFFSET = 0.10           # place 阶段 z 轴高度偏移（米）
+PLACE_Z_OFFSET = 0.15           # place 阶段 z 轴高度偏移（米）
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
-MOVE_CONTAINER_THRESHOLD = 0.10 # 容器移动检测阈值（米，10cm）
+MOVE_CONTAINER_THRESHOLD = 0.15 # 容器移动检测阈值（米，10cm）
 
 # 规划参数
 SAFE_HEIGHT = 0.06              # 安全高度（米）
@@ -100,17 +91,10 @@ APPROACH_ANGULAR_STEP = 0.15     # APPROACH 直线插值的单段姿态变化（
 
 class TaskPhase(Enum):
     """当前任务所处阶段"""
+    IDLE = auto()
     PICK = auto()
     PLACE = auto()
-
-
-class SystemMode(Enum):
-    """系统工作模式"""
-    TRACKING = auto()       # 持续打点追踪模式（感知线程活跃）
-    EXECUTING = auto()      # 动作执行模式（CRITICAL 段，仅执行）
-    CHECKING = auto()       # 结果检测模式
-    RESETTING = auto()      # 机械臂复位模式
-    IDLE = auto()           # 空闲
+    COMPLETE = auto()
 
 
 # ═══════════════════════════════════════════════════
@@ -125,8 +109,7 @@ class SharedState:
 
         # ===== 任务信息 =====
         self.current_task = None                    # {'pick': ..., 'place': ...}
-        self.task_phase = TaskPhase.PICK
-        self.system_mode = SystemMode.IDLE
+        self.task_phase = TaskPhase.IDLE
 
         # ===== 感知输出 =====
         self.target_name = None                     # 当前追踪的目标名称
@@ -136,371 +119,240 @@ class SharedState:
         self.last_stable_point_3d = None            # 上次稳定 3D 坐标
         self.point_changed = False
         self.is_first_point = True
+        self.tracking_mode = False                  # 追踪模式
+        self.verify_mode = False                    # 验证模式
 
         # ===== 规划输出 =====
-        self.plan_stage = "APPROACH"
-        self.action_list = []                       # [{"joints": ..., "gripper": ...}, ...]
+        self.action_list = []                       # [{"joints": ..., "gripper": ..., "tag": ...}, ...]
         self.action_index = 0
         self.plan_ready = threading.Event()         # 规划完成信号
         self.need_replan = threading.Event()        # 需要重规划信号
 
         # ===== 执行控制 =====
-        self.execution_done = threading.Event()     # 动作列表执行完毕信号
-        self.abort_execution = threading.Event()    # 中止当前执行信号
+        self.attemp_count = 0
+        self.abort_execution = threading.Event()    # 停止当前执行信号
+
+        # ===== 任务结果 =====
+        self.task_done = threading.Event()
+        self.task_success = False
 
         # ===== 全局控制 =====
         self.stop_all = threading.Event()           # 全局停止
-        self.pause_perception = threading.Event()   # 暂停感知线程
+    
+    def reset_state(self):
+        with self.lock:
+
+            self.current_task = None
+            self.task_phase = TaskPhase.IDLE
+
+            self.target_name = None
+            self.latest_point_2d = None
+            self.latest_point_3d = None
+            self.latest_target_T = None
+            self.last_stable_point_3d = None
+            self.point_changed = False
+            self.is_first_point = True
+            self.tracking_mode = False
+            self.verify_mode = False
+
+            self.action_list = []
+            self.action_index = 0
+            self.plan_ready.clear()
+            self.need_replan.clear()
+
+            self.attemp_count = 0
+            self.abort_execution.clear()
+
+            self.task_done.clear()
+            self.task_success = False
 
 
 # ═══════════════════════════════════════════════════
 # 感知线程
 # ═══════════════════════════════════════════════════
 
-def perception_thread(state, rs_env, cam_results, home_T_tcp2base):
+def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
     """
-    感知线程：持续以固定频率调用 VLM 打点，检测物体位置变化。
+    感知线程, 分为两种模式
+    1. 追踪模式: 持续以固定频率调用 VLM 打点，检测物体位置变化。
+    2. 验证模式: 调用 VLM 验证抓取/放置是否成功。
 
-    - 只在 APPROACH 段活跃（CRITICAL / CHECKING 段被暂停）
-    - 首次获取到点位 → 触发 need_replan
-    - 物体移动超过阈值 → 触发 abort_execution + need_replan
+    Args:
+        state: SharedState 实例
+        env: RealmanEnv 实例
+        rs_env: Open3dRealsenseEnv 实例
+        cam_results: 相机标定结果
+        home_T_tcp2base: home 位姿矩阵
+
+    Returns:
+        None
     """
     print("[感知线程] 已启动")
 
     while not state.stop_all.is_set():
 
-        # --- 暂停检测 ---
-        if state.pause_perception.is_set():
-            time.sleep(0.05)
-            continue
+        # 追踪模式
+        if state.tracking_mode:
 
-        # --- 获取当前追踪目标 ---
-        with state.lock:
-            target_name = state.target_name
-            task_phase = state.task_phase
-            if target_name is None:
-                pass  # fall through to sleep
-            else:
-                target_name_copy = target_name
-
-        if target_name is None:
-            time.sleep(0.1)
-            continue
-
-        try:
-            # 1. 获取 RGB 图像
-            obs = rs_env.step()
-            image_rgb = obs["rgb"]
-
-            # 2. 调用 VLM 打点
-            point_2d = get_point_vllm(
-                image_rgb,
-                f"Point the {target_name_copy}",
-                save_path=None,  # 不保存调试图片，提升速度
-            )
-
-            # 保存打点图片
-            # save_check_image(image_rgb, point_2d, SAVE_DIR)
-            # get_point_vllm 返回 np.array([x, y])
-
-            # 3. 2D → 3D 转换
-            target_T = make_target_T(
-                obs,
-                int(point_2d[0]),
-                int(point_2d[1]),
-                rs_env,
-                cam_results,
-                home_T_tcp2base,
-            )
-
-            # 对于place阶段修订z轴高度
-            if task_phase == TaskPhase.PLACE:
-                target_T = make_lift_T(target_T, lift_z=PLACE_Z_OFFSET)
-
-            # 修正通用的相机标定偏移（向右偏置 1cm）
-            target_T = make_lift_T(target_T, lift_x=-0.01, lift_y=-0.01)
-
-            new_xyz = target_T[:3, 3]
-
-            # 4. 更新共享状态 & 变化检测
+            # 获取当前追踪目标
             with state.lock:
-                state.latest_point_2d = point_2d.copy()
-                state.latest_point_3d = new_xyz.copy()
-                state.latest_target_T = target_T.copy()
+                target_name = state.target_name
+                task_phase = state.task_phase
+                if target_name is None:
+                    continue
 
-                if state.is_first_point:
-                    # 第一个有效点
-                    state.last_stable_point_3d = new_xyz.copy()
-                    state.is_first_point = False
-                    state.point_changed = True
-                    state.need_replan.set()
-                    print(f"[感知] 📍 首次定位 {target_name_copy}: xyz={np.round(new_xyz, 4)}")
+            try:
+                # 获取 RGB 图像
+                obs = rs_env.step()
+                image_rgb = obs["rgb"]
 
-                else:
-                    dist = np.linalg.norm(new_xyz - state.last_stable_point_3d)
+                # double check tracking 状态(防止 post 阶段误打点)
+                with state.lock:
+                    if not state.tracking_mode:
+                        time.sleep(PERCEPTION_INTERVAL)
+                        continue
 
-                    # 根据当前阶段选择移动阈值：
-                    # PICK 阶段追踪物体 → 小阈值（物体小，容易被推动）
-                    # PLACE 阶段追踪容器 → 大阈值（容器大，打点波动更大）
-                    threshold = MOVE_OBJECT_THRESHOLD if state.task_phase == TaskPhase.PICK else MOVE_CONTAINER_THRESHOLD
+                # 调用 VLM 打点
+                point_2d = get_point_vllm(image_rgb, f"Point the {target_name}", save_path=None)
 
-                    if dist > threshold:
-                        # 目标移动了！
-                        # 感知线程只在 APPROACH 段活跃，所以一定可以触发重规划
-                        state.last_stable_point_3d = new_xyz.copy()
+                # 保存打点图片
+                # save_check_image(image_rgb, point_2d, SAVE_DIR)
+                # get_point_vllm 返回 np.array([x, y])
+
+                # 2D → 3D 转换
+                target_T = make_target_T(obs, int(point_2d[0]), int(point_2d[1]), rs_env, cam_results, home_T_tcp2base)
+
+                # 对 place 阶段修正 z 轴高度
+                if task_phase == TaskPhase.PLACE:
+                    target_T = make_lift_T(target_T, lift_z=PLACE_Z_OFFSET)
+
+                # 修正通用的相机标定偏移
+                target_T = make_lift_T(target_T, lift_x=-0.01, lift_y=-0.01)
+
+                target_xyz = target_T[:3, 3]
+
+                # 4. 更新共享状态 & 变化检测
+                with state.lock:
+                    state.latest_point_2d = point_2d.copy()
+                    state.latest_point_3d = target_xyz.copy()
+                    state.latest_target_T = target_T.copy()
+
+                    if state.is_first_point:
+                        # 第一个有效点
+                        state.last_stable_point_3d = target_xyz.copy()
+                        state.is_first_point = False
                         state.point_changed = True
-                        state.abort_execution.set()
                         state.need_replan.set()
-                        label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
-                        print(f"[感知] ⚠️ {label} {target_name_copy} 移动！距离: {dist:.4f}m (阈值={threshold}m) → 重规划")
+                        print(f"[感知] 📍 首次定位 {target_name}: xyz={np.round(target_xyz, 4)}")
+
                     else:
-                        state.point_changed = False
+                        dist = np.linalg.norm(target_xyz - state.last_stable_point_3d)
 
-        except Exception as e:
-            print(f"[感知] 异常: {e}")
+                        # 根据当前阶段选择移动阈值
+                        if state.task_phase == TaskPhase.PICK:
+                            threshold = MOVE_OBJECT_THRESHOLD
+                        elif state.task_phase == TaskPhase.PLACE:
+                            threshold = MOVE_CONTAINER_THRESHOLD
+                        else:
+                            continue
 
-        time.sleep(PERCEPTION_INTERVAL)
+                        if dist > threshold:
+                            # 目标移动了！
+                            state.last_stable_point_3d = target_xyz.copy()
+                            state.point_changed = True
+                            state.abort_execution.set() # 中止当前执行
+                            state.need_replan.set()     # 触发重规划
+
+                            label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
+                            print(f"[感知] ⚠️ {label} {target_name} 移动！距离: {dist:.4f}m (阈值={threshold}m) → 重规划")
+                        else:
+                            state.point_changed = False # 目标没有移动
+
+            except Exception as e:
+                print(f"[感知] 异常: {e}")
+
+        # 验证模式
+        elif state.verify_mode:
+
+            with state.lock:
+                current_task = state.current_task
+                task_phase = state.task_phase
+                target_name = state.target_name
+                check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
+                attemp_count = state.attemp_count
+
+            if task_phase == TaskPhase.PICK:
+                
+                pick_success = do_check_pick_success(env,rs_env, current_task['pick'], point_2d=check_point_2d,cam_results=cam_results, home_T_tcp2base=home_T_tcp2base)
+                
+                if pick_success:
+                    # 重置状态
+                    current_task = state.current_task
+                    state.reset_state()
+                    # 改为 place 阶段
+                    with state.lock:
+                        state.current_task = current_task
+                        state.task_phase = TaskPhase.PLACE
+                        state.target_name = current_task['place']
+                        state.tracking_mode = True
+                        state.verify_mode = False
+                
+                else:
+                    if attemp_count + 1 >= MAX_PICK_RETRIES:
+                        state.task_success = False
+                        state.task_done.set()
+                        continue
+                    
+                    else:
+                        # 回到感知模式，重新打点
+                        with state.lock:
+                            state.latest_point_2d = None
+                            state.latest_point_3d = None
+                            state.latest_target_T = None
+                            state.last_stable_point_3d = None
+                            state.point_changed = False
+                            state.is_first_point = True
+                            state.tracking_mode = True
+                            state.verify_mode = False
+                            state.attemp_count = attemp_count + 1
+                            
+
+            elif task_phase == TaskPhase.PLACE:
+                
+                place_success = do_check_place_success(rs_env, current_task['pick'], current_task['place'], point_2d=check_point_2d,cam_results=cam_results, home_T_tcp2base=home_T_tcp2base)
+            
+                if place_success:
+                    state.reset_state()
+                    with state.lock:
+                        state.task_success = True
+                        state.task_done.set()
+                        continue
+                else:
+                    if attemp_count + 1 >= MAX_PLACE_RETRIES:
+                        state.task_success = False
+                        state.task_done.set()
+                        continue
+                    
+                    else:
+                        # 回到感知模式，重新打点
+                        with state.lock:
+                            state.target_name = current_task['pick']
+                            state.task_phase = TaskPhase.PICK
+                            state.latest_point_2d = None
+                            state.latest_point_3d = None
+                            state.latest_target_T = None
+                            state.last_stable_point_3d = None
+                            state.point_changed = False
+                            state.is_first_point = True
+                            state.tracking_mode = True
+                            state.verify_mode = False
+                            state.attemp_count = attemp_count + 1
+            
 
     print("[感知线程] 已停止")
 
 
-# ═══════════════════════════════════════════════════
-# 规划线程
-# ═══════════════════════════════════════════════════
-
-def planning_thread(state, env, curobo_planner, home_T_tcp2base):
-    """
-    规划线程：接收 need_replan 信号，调用 curobo 生成 APPROACH 段轨迹。
-
-    - 只规划到 pre_pick / pre_place（物体上方安全位置）
-    - CRITICAL 段（下压/抓取/提起）由主线程直接下发，不经过此线程
-    """
-    print("[规划线程] 已启动")
-
-    while not state.stop_all.is_set():
-
-        # 等待重规划信号
-        triggered = state.need_replan.wait(timeout=0.5)
-        if not triggered:
-            continue
-        state.need_replan.clear()
-
-        # 只在 TRACKING 模式下规划
-        with state.lock:
-            if state.system_mode != SystemMode.TRACKING:
-                continue
-            target_T = state.latest_target_T
-            task_phase = state.task_phase
-            if target_T is None:
-                continue
-            target_T = target_T.copy()
-
-        try:
-            # 1. 获取当前关节状态（sync 模式下实时读取 SDK）
-            robot_state = env.get_state()
-            current_joint = robot_state.joint  # 弧度制
-
-            # 2. 构建 APPROACH 段动作列表（只规划到 pre_pick/pre_place）
-
-            action_list = build_approach_action_list(
-                target_T, home_T_tcp2base, current_joint,
-                curobo_planner, task_phase, env,
-            )
-
-            if action_list is None or len(action_list) == 0:
-                print("[规划] ⚠️ 规划失败，等待下次重规划")
-                continue
-
-            # 3. 更新共享状态（原子操作）
-            with state.lock:
-                state.abort_execution.set()         # 先中止旧执行
-            time.sleep(0.03)                        # 给执行线程响应时间
-            with state.lock:
-                state.action_list = action_list
-                state.action_index = 0
-                state.execution_done.clear()
-                state.abort_execution.clear()       # 允许新执行
-                state.plan_ready.set()              # 通知执行线程
-                print(f"[规划] 📐 规划完成，动作序列长度: {len(action_list)}")
-
-        except Exception as e:
-            print(f"[规划] 异常: {e}")
-
-    print("[规划线程] 已停止")
-
-
-def build_approach_action_list(target_T, home_T_tcp2base, current_joint,
-                                curobo_planner, task_phase, env):
-    """
-    构建 APPROACH 段动作序列（只规划到 pre_pick / pre_place）。
-
-    CRITICAL 段（下压/抓取/提起）由主线程单独处理，不在此函数中。
-
-    Args:
-        target_T: 目标物体的 4x4 位姿矩阵
-        home_T_tcp2base: home 位姿矩阵（用于旋转参考）
-        current_joint: 当前关节角度（弧度制）
-        curobo_planner: curobo 规划器实例
-        task_phase: TaskPhase.PICK 或 TaskPhase.PLACE
-        env: RealmanEnv 实例
-
-    Returns:
-        action_list: [{"joints": np.array, "gripper": float}, ...]
-        None 表示规划失败
-    """
-
-    # 1. 根据位置计算抓取姿态
-    pick_T = compute_grasp_T(target_T, home_T_tcp2base)
-
-    # 2. 计算 pre 位姿（目标上方安全位置）
-    if task_phase == TaskPhase.PICK:
-        pre_target_T = make_lift_T(pick_T, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
-    else:
-        pre_target_T = make_lift_T(pick_T, lift_z=APPROACH_Z_OFFSET)
-
-    
-    # 3. 在 curobo 尚未接入前，直接使用 pretarget 单个点作为目标由 realman 自己解轨迹
-    # TODO: 替换为实际的 curobo plan 调用
-    # trajectory = curobo_planner.plan(current_joint, pre_target_T)
-    
-    target_pose = realman_xyzrpy_from_T(pre_target_T)
-    gripper_state = GRIPPER_OPEN if task_phase == TaskPhase.PICK else GRIPPER_CLOSE
-    action_list = [{"pose": target_pose, "gripper": gripper_state}]
-
-    return action_list
-
-
-def compute_grasp_T(target_T, home_T_tcp2base):
-    """
-    根据物体位置计算合适的抓取姿态旋转矩阵。
-
-    Args:
-        target_T: 目标物体 4x4 位姿矩阵
-        home_T_tcp2base: home 位姿矩阵
-
-    Returns:
-        带有正确旋转的抓取位姿 4x4 矩阵
-    """
-    x, y, z = target_T[:3, 3]
-
-    # 根据 y 值（距离）选择适当的俯仰角
-    if y > -0.35:
-        rx_degree = RX_DEGREE_CLOSE
-    elif z > 0.12:
-        rx_degree = RX_DEGREE_FAR_HIGH
-    else:
-        rx_degree = RX_DEGREE_FAR_LOW
-
-    rx = -1 * (rx_degree / 180) * np.pi
-    Rx = np.array([
-        [1, 0, 0],
-        [0, np.cos(rx), -np.sin(rx)],
-        [0, np.sin(rx), np.cos(rx)]
-    ])
-
-    grasp_T = copy.deepcopy(home_T_tcp2base)
-    grasp_T[:3, :3] = Rx @ home_T_tcp2base[:3, :3]
-    grasp_T[:3, 3] = target_T[:3, 3]
-
-    return grasp_T
-
-
-
-# ═══════════════════════════════════════════════════
-# 执行线程
-# ═══════════════════════════════════════════════════
-
-def execution_thread(state, env):
-    """
-    执行线程：依次执行动作列表中的动作点。
-
-    - 支持中断（abort_execution）
-    - 支持重新开始（plan_ready）
-    - 动作列表执行完毕 → 设置 execution_done
-    """
-    print("[执行线程] 已启动")
-
-    while not state.stop_all.is_set():
-
-        # 等待规划完成信号
-        triggered = state.plan_ready.wait(timeout=0.5)
-        if not triggered:
-            continue
-
-        print("[执行] ▶️ 开始执行动作序列")
-
-        while not state.stop_all.is_set():
-
-            # 检查中止信号
-            if state.abort_execution.is_set():
-                print("[执行] ⏹️ 执行被中止，等待新规划")
-                state.plan_ready.clear()
-                break
-
-            with state.lock:
-                # 检查是否执行完毕
-                if state.action_index >= len(state.action_list):
-                    state.plan_ready.clear()
-                    state.execution_done.set()
-                    print("[执行] ✅ APPROACH 动作序列执行完毕")
-                    break
-
-                # 取出当前动作
-                action = state.action_list[state.action_index]
-                state.action_index += 1
-
-            # === 执行动作（锁外，避免长时间持锁）===
-            # 通过 env.step() 统一下发（阻塞式）
-
-            step_action = {}
-
-            if "joints" in action:
-                joint_deg = np.degrees(action["joints"]) if np.max(np.abs(action["joints"])) < 2 * np.pi else action["joints"]
-                step_action["joint"] = joint_deg
-            elif "pose" in action:
-                step_action["pose"] = action["pose"]
-
-            if "gripper" in action:
-                step_action["gripper"] = action["gripper"]
-
-            env.step(step_action)
-
-            time.sleep(CONTROL_INTERVAL)
-
-    print("[执行线程] 已停止")
-
-
-# ═══════════════════════════════════════════════════
-# CRITICAL 段执行器（主线程阻塞式）
-# ═══════════════════════════════════════════════════
-
-def execute_critical_sequence(env, critical_actions):
-    """
-    阻塞式执行 CRITICAL 动作序列（短距离确定性动作）。
-    直接在调用线程中顺序执行，不经过多线程。
-
-    Args:
-        env: RealmanEnv 实例
-        critical_actions: [{"pose": xyzrpy, "gripper": float, "wait": float}, ...]
-    """
-
-    print("--------------------------------")
-    print(f"critical_actions: {critical_actions}")
-    print("--------------------------------")
-    for i, action in enumerate(critical_actions):
-        print(f"  [CRITICAL] Step {i+1}/{len(critical_actions)}: "
-              f"pose={np.round(action['pose'], 3)}, gripper={action['gripper']:.2f}")
-
-        env.step({"pose": action["pose"], "gripper": action["gripper"]})
-        # 先运动到位，再操作夹爪（通过 env.step 统一下发）
-        # env.step({"pose": action["pose"]})
-        # env.step({"gripper": action["gripper"]})
-
-
-# ═══════════════════════════════════════════════════
 # 结果检测
-# ═══════════════════════════════════════════════════
-
 def do_check_pick_success(env, rs_env, pick_name, point_2d=None,cam_results=None, home_T_tcp2base=None):
     """
     通过两种方式进行自动化检测：
@@ -628,210 +480,255 @@ def do_check_place_success(rs_env, pick_name, place_name, point_2d=None,cam_resu
 
 
 # ═══════════════════════════════════════════════════
-# 主线程调度逻辑（两段式）
+# 规划线程
 # ═══════════════════════════════════════════════════
 
-def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
+def planning_thread(state, env, curobo_planner, home_T_tcp2base):
     """
-    执行单个 pick-and-place 任务（两段式调度）。
-
-    每个 PICK / PLACE 阶段拆分为：
-    - 子阶段 1 APPROACH: 三线程协作（感知✅ 规划✅ 执行✅）
-    - 子阶段 2 CRITICAL: 主线程阻塞执行（感知⛔ 规划⛔）
-    - 结果检测 CHECKING
+    规划线程：接收 need_replan 信号，调用 curobo 生成 pick/place 单段轨迹。
     """
+    print("[规划线程] 已启动")
 
-    pick_success = False
-    place_success = False
+    while not state.stop_all.is_set():
 
-    # ════════════════════════════════════════════
-    # PICK 阶段
-    # ════════════════════════════════════════════
-    for attempt in range(MAX_PICK_RETRIES):
-        print(f"\n🎯 PICK attempt {attempt + 1}/{MAX_PICK_RETRIES}: {task['pick']}")
-
-        # ─────────────────────────────────────
-        # 子阶段 1: APPROACH（到达 pre_pick）
-        #   感知✅ 规划✅ 执行✅
-        # ─────────────────────────────────────
-        with state.lock:
-            state.current_task = task
-            state.task_phase = TaskPhase.PICK
-            state.system_mode = SystemMode.TRACKING
-            state.target_name = task['pick']
-            state.is_first_point = True
-            state.last_stable_point_3d = None
-            state.plan_stage = "APPROACH"
-            state.action_list = []
-            state.action_index = 0
-            state.execution_done.clear()
-            state.abort_execution.clear()
-            state.plan_ready.clear()
-            state.need_replan.clear()
-            state.pause_perception.clear()      # 感知线程活跃
-
-        # 等待 APPROACH 段执行完毕（到达 pre_pick）
-        print("[主线程] 等待 APPROACH 完成...")
-        state.execution_done.wait()
-        print("[主线程] 📍 已到达 pre_pick 位置")
-
-        # ─────────────────────────────────────
-        # 子阶段 2: CRITICAL（下压 → 闭合 → 提起）
-        #   感知⛔ 规划⛔ 仅主线程执行
-        # ─────────────────────────────────────
-        with state.lock:
-            state.system_mode = SystemMode.EXECUTING
-            state.pause_perception.set()        # ⛔ 暂停感知线程
-
-            # 基于感知线程最后一次打点结果计算抓取位姿
-            target_T = state.latest_target_T
-            if target_T is None:
-                print("[主线程] ⚠️ 没有有效的目标位姿，跳过")
-                continue
-            target_T = target_T.copy()
-
-        # 计算抓取位姿
-        pick_T = compute_grasp_T(target_T, home_T_tcp2base)
-        pick_xyzrpy = realman_xyzrpy_from_T(pick_T)
-        post_pick_T = make_lift_T(pick_T, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
-        post_pick_xyzrpy = realman_xyzrpy_from_T(post_pick_T)
-
-        critical_actions = [
-            {"pose": pick_xyzrpy,       "gripper": GRIPPER_OPEN,  "wait": 0.0},   # 下压到物体位置
-            {"pose": pick_xyzrpy,       "gripper": GRIPPER_CLOSE, "wait": 0.0},   # 闭合夹爪
-            {"pose": post_pick_xyzrpy,  "gripper": GRIPPER_CLOSE, "wait": 0.0},   # 提起
-        ]
-
-        print("[主线程] 🤏 执行 CRITICAL 序列（下压→闭合→提起）...")
-        execute_critical_sequence(env, critical_actions)
-        print("[主线程] 🤏 CRITICAL 执行完毕")
-
-        # ─────────────────────────────────────
-        # 结果检测: CHECKING
-        # ─────────────────────────────────────
-        with state.lock:
-            state.system_mode = SystemMode.CHECKING
-            check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
-            # 感知线程仍然暂停
-
-        pick_success = do_check_pick_success(env,rs_env, task['pick'], point_2d=check_point_2d,cam_results=cam_results, home_T_tcp2base=home_T_tcp2base)
-
-        if pick_success:
-            print("✅ Pick 成功!")
-            break
-        else:
-            print("❌ Pick 失败, 重试...")
-            env.step({"gripper": GRIPPER_OPEN})
-            time.sleep(0.5)
+        triggered = state.need_replan.wait(timeout=0.05)
+        
+        if not triggered:
             continue
 
-    if not pick_success:
-        print("⛔ Pick 多次重试失败，跳过此任务")
-        return False
+        state.need_replan.clear()
 
-    # ════════════════════════════════════════════
-    # PLACE 阶段
-    # ════════════════════════════════════════════
-    for attempt in range(MAX_PLACE_RETRIES):
-        print(f"\n📦 PLACE attempt {attempt + 1}/{MAX_PLACE_RETRIES}: {task['place']}")
-
-        # ─────────────────────────────────────
-        # 子阶段 1: APPROACH（到达 pre_place）
-        #   感知✅ 规划✅ 执行✅
-        # ─────────────────────────────────────
         with state.lock:
-            state.task_phase = TaskPhase.PLACE
-            state.system_mode = SystemMode.TRACKING
-            state.target_name = task['place']
-            state.is_first_point = True
-            state.last_stable_point_3d = None
-            state.plan_stage = "APPROACH"
-            state.action_list = []
-            state.action_index = 0
-            state.execution_done.clear()
-            state.abort_execution.clear()
-            state.plan_ready.clear()
-            state.need_replan.clear()
-            state.pause_perception.clear()      # 感知线程恢复
-
-        print("[主线程] 等待 APPROACH 完成...")
-        state.execution_done.wait()
-        print("[主线程] 📍 已到达 pre_place 位置")
-
-        # ─────────────────────────────────────
-        # 子阶段 2: CRITICAL（下放 → 松开 → 抬起）
-        #   感知⛔ 规划⛔ 仅主线程执行
-        # ─────────────────────────────────────
-        with state.lock:
-            state.system_mode = SystemMode.EXECUTING
-            state.pause_perception.set()
-            target_T = state.latest_target_T
-            if target_T is None:
-                print("[主线程] ⚠️ 没有有效的目标位姿，跳过")
+            if state.latest_target_T is None:
                 continue
-            target_T = target_T.copy()
+            task_phase = state.task_phase
+            target_T = state.latest_target_T.copy()
 
-        # 计算放置位姿（使用 pick 时的抓取旋转，保持物体姿态）
-        place_T = compute_grasp_T(target_T, home_T_tcp2base)
-        place_xyzrpy = realman_xyzrpy_from_T(place_T)
+        try:
+            # 获取当前关节状态
+            robot_state = env.get_state()           # TODO：这里很不稳定，需要优化
+            current_joint = robot_state.joint       # 弧度制
 
-        post_place_T = make_lift_T(place_T, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
-        post_place_xyzrpy = realman_xyzrpy_from_T(post_place_T)
+            # 构建动作序列
+            action_list = build_action_list(env, target_T, home_T_tcp2base, curobo_planner, task_phase)
 
-        critical_actions = [
-            {"pose": place_xyzrpy,      "gripper": GRIPPER_CLOSE, "wait": 0.0},   # 下放
-            {"pose": place_xyzrpy,      "gripper": GRIPPER_OPEN,  "wait": 0.0},   # 松开夹爪
-            {"pose": post_place_xyzrpy, "gripper": GRIPPER_OPEN,  "wait": 0.0},   # 抬起
-        ]
+            if action_list is None or len(action_list) == 0:
+                print("[规划] ⚠️ 规划失败，重新规划")
+                state.need_replan.set()             # 触发重规划
+                continue
 
-        print("[主线程] 📤 执行 CRITICAL 序列（下放→松开→抬起）...")
-        execute_critical_sequence(env, critical_actions)
-        print("[主线程] 📤 CRITICAL 执行完毕")
+            # 更新共享状态
+            state.abort_execution.set()         # 中止旧执行
 
-        # ─────────────────────────────────────
-        # 结果检测
-        # ─────────────────────────────────────
-        with state.lock:
-            state.system_mode = SystemMode.CHECKING
-            check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
+            # 等 execution thread 确认停止
+            while state.plan_ready.is_set():
+                time.sleep(0.01)
+            
+            with state.lock:
+                state.action_list = action_list
+                state.action_index = 0
+                state.abort_execution.clear()       # 允许新执行
+                state.plan_ready.set()              # 通知执行线程
+                print(f"[规划] 📐 规划完成，动作序列长度: {len(action_list)}")
 
-        place_success = do_check_place_success(
-            rs_env,
-            task['pick'],
-            task['place'],
-            point_2d=check_point_2d,
-            cam_results=cam_results,
-            home_T_tcp2base=home_T_tcp2base,
-        )
+        except Exception as e:
+            print(f"[规划] 异常: {e}")
 
-        if place_success:
-            print("✅ Place 成功!")
-            break
-        else:
-            print("❌ Place 失败, 从 pick 重新开始...")
-            # Place 失败 → reset → 重新从 pick 开始
-            env.step({"gripper": GRIPPER_OPEN})
-            time.sleep(0.3)
+
+def build_action_list(env, target_T, home_T_tcp2base, curobo_planner, task_phase):
+    """
+    构建动作序列(完整的 pre_pick-pick-post_pick 或 pre_place-place-post_place)。
+
+    Args:
+        env: RealmanEnv 实例
+        target_T: 目标物体的 4x4 位姿矩阵
+        home_T_tcp2base: home 位姿矩阵（用于旋转参考）
+        curobo_planner: curobo 规划器实例
+        task_phase: TaskPhase.PICK 或 TaskPhase.PLACE
+        
+    Returns:
+        action_list: [{"pose": np.array, "gripper": float, "tag": int}, ...]
+        其中 tag=0 为 approach 动作, tag=1 为 target 动作, tag=2 为 post 动作
+        None 表示规划失败
+    """
+
+    # 根据目标 xyz 重新设置 pose
+    target_T_new = adjust_target_T(target_T, home_T_tcp2base)
+
+    # 计算 pre 位姿（目标上方安全位置）
+    if task_phase == TaskPhase.PICK:
+        pre_target_T = make_lift_T(target_T_new, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET)
+        pre_target_pose = realman_xyzrpy_from_T(pre_target_T)
+        pre_gripper_state = GRIPPER_OPEN
+    else:
+        pre_target_T = make_lift_T(target_T_new, lift_z=APPROACH_Z_OFFSET)
+        pre_target_pose = realman_xyzrpy_from_T(pre_target_T)
+        pre_gripper_state = GRIPPER_CLOSE
+
+    
+    # TODO: 使用 pre_target_T 作为目标，调用 curobo 规划器生成 pre 段轨迹
+    # trajectory = curobo_planner.plan(current_joint, pre_target_T)   
+
+    if task_phase == TaskPhase.PICK:
+
+        
+        target_pose = realman_xyzrpy_from_T(target_T_new)
+        target_gripper_state = GRIPPER_CLOSE
+
+        post_target_T = make_lift_T(target_T_new, lift_y=APPROACH_Y_OFFSET, lift_z=APPROACH_Z_OFFSET+0.03)
+        post_target_pose = realman_xyzrpy_from_T(post_target_T)
+
+    else:
+
+        target_pose = realman_xyzrpy_from_T(target_T_new)
+        target_gripper_state = GRIPPER_OPEN
+
+        post_target_T = make_lift_T(target_T_new, lift_z=APPROACH_Z_OFFSET)
+        post_target_pose = realman_xyzrpy_from_T(post_target_T)
+
+    # post 不传 gripper 状态
+    action_list = [{"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0},
+                   {"pose": target_pose, "gripper": target_gripper_state, "tag": 1},
+                   {"pose": post_target_pose, "tag": 2}]
+
+    print(f"action_list: {action_list}")
+
+    return action_list
+            
+
+def adjust_target_T(target_T, home_T_tcp2base):
+    """
+    根据物体位置计算合适的抓取姿态旋转矩阵。
+
+    Args:
+        target_T: 目标物体 4x4 位姿矩阵
+        home_T_tcp2base: home 位姿矩阵
+
+    Returns:
+        带有正确旋转的抓取位姿 4x4 矩阵
+    """
+    x, y, z = target_T[:3, 3]
+
+    # 根据 y 值（距离）选择适当的俯仰角
+    if y > -0.35:
+        rx_degree = RX_DEGREE_CLOSE
+    elif z > 0.12:
+        rx_degree = RX_DEGREE_FAR_HIGH
+    else:
+        rx_degree = RX_DEGREE_FAR_LOW
+
+    rx = -1 * (rx_degree / 180) * np.pi
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(rx), -np.sin(rx)],
+        [0, np.sin(rx), np.cos(rx)]
+    ])
+
+    grasp_T = copy.deepcopy(home_T_tcp2base)
+    grasp_T[:3, :3] = Rx @ home_T_tcp2base[:3, :3]
+    grasp_T[:3, 3] = target_T[:3, 3]
+
+    return grasp_T
+
+
+# ═══════════════════════════════════════════════════
+# 执行线程
+# ═══════════════════════════════════════════════════
+
+def execution_thread(state, env):
+    """
+    执行线程：依次执行动作列表中的动作点。
+
+    - 支持中断 abort_execution
+    - 支持重新开始 plan_ready
+    - 动作列表执行完毕
+    """
+    print("[执行线程] 已启动")
+
+    while not state.stop_all.is_set():
+
+        # 等待规划完成信号
+        triggered = state.plan_ready.wait(timeout=0.05)
+        
+        if not triggered:
+            continue
+
+        print("[执行] ▶️ 开始执行动作序列")
+
+        while not state.stop_all.is_set():
+
+            # 检查中止信号
+            if state.abort_execution.is_set():
+                print("[执行] ⏹️ 执行被中止，等待重新规划")
+                
+                with state.lock:
+                    state.action_list = []
+                    state.action_index = 0
+                
+                state.plan_ready.clear()
+                break
 
             with state.lock:
-                state.system_mode = SystemMode.RESETTING
-                state.pause_perception.set()
+                
+                # 检查是否执行完毕
+                if state.action_index >= len(state.action_list):
+                    state.plan_ready.clear()
+                    state.verify_mode = True   # 感知线程切换到验证模式
+                    print("[执行] ✅ 动作序列执行完成")
+                    break
 
-            print("[主线程] 🔄 机械臂 Reset...")
-            env.reset()
+                # 取出当前动作
+                action = state.action_list[state.action_index]
+                state.action_index += 1
 
-            # 递归重试整个任务
-            return run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base)
+            # === 执行动作 ===
 
-    if not place_success:
-        print("⛔ Place 多次重试失败")
+            step_action = {}
+
+            if "joints" in action:
+                joint_deg = np.degrees(action["joints"]) if np.max(np.abs(action["joints"])) < 2 * np.pi else action["joints"]
+                step_action["joint"] = joint_deg
+            
+            elif "pose" in action:
+                step_action["pose"] = action["pose"]
+
+            if "gripper" in action:
+                step_action["gripper"] = action["gripper"]
+
+            # post阶段感知线程空转，避免影响执行
+            if action["tag"] == 2:
+                with state.lock:
+                    state.tracking_mode = False
+                    state.verify_mode = False
+
+            env.step(step_action)
+
+    print("[执行线程] 已停止")
+
+# ═══════════════════════════════════════════════════
+# 主线程调度逻辑
+# ═══════════════════════════════════════════════════
+
+# 执行单个任务
+def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
+
+    state.reset_state()
+
+    with state.lock:
+        state.current_task = task
+        state.task_phase = TaskPhase.PICK
+        state.tracking_mode = True
+        state.target_name = task['pick']
+
+    state.task_done.wait()
+
+    if state.task_success:
+        return True
+    else:
         return False
 
-    return True
-
-
+# 执行所有任务
 def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
-    """执行所有任务"""
 
     for i, task in enumerate(task_list):
         print(f"\n{'='*60}")
@@ -841,10 +738,10 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
         success = run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base)
 
         if not success:
-            print(f"⛔ Task [{i}] 失败，终止")
-            break
+            print(f"⛔ Task [{i}] 失败，继续下一个任务。")
+            continue
 
-        # === Place 成功后的处理 ===
+        # === 当前任务执行成功后的处理 ===
         if i + 1 < len(task_list):
             next_task = task_list[i + 1]
 
@@ -852,11 +749,11 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
             # 这样在 reset 的阻塞时间内，感知线程已经在为下一个任务打点
             with state.lock:
                 state.task_phase = TaskPhase.PICK
-                state.system_mode = SystemMode.TRACKING
+                state.tracking_mode = True
+                state.verify_mode = False
                 state.target_name = next_task['pick']
                 state.is_first_point = True
                 state.last_stable_point_3d = None
-                state.pause_perception.clear()      # 恢复感知，开始打点
 
             print("[主线程] 🔄 机械臂 Reset 中（感知线程已提前启动下一任务）...")
             env.reset()
@@ -887,12 +784,12 @@ def main():
         cam_results = json.load(f)
 
     # ============================
-    # 2. 初始化 curobo（TODO）
+    # 2. 初始化 curobo
     # ============================
 
     # curobo_planner = init_curobo(robot_config_path)
     # curobo_planner.warmup()
-    curobo_planner = None  # TODO: 替换为实际的 curobo 规划器
+    curobo_planner = None  # 替换为实际的 curobo 规划器
 
     # ============================
     # 3. 获取初始位姿
@@ -907,7 +804,7 @@ def main():
     # 4. 指令拆解
     # ============================
 
-    instruction = "Pick the white ball and place it on the pink plate."
+    instruction = "Pick the white ball and place it on the pink plate, then pick the carrot and place it on the pink plate."
     # instruction = "Pick the white ball and place it on the basket, then pick the carrot and place it on the basket, pick the yellow ball and place it on the basket, then pick the glue stick and place it on the basket, pick the rubics cube and place it on the basket."
     print(f"\n[任务] 指令: {instruction}")
     print("[任务] 调用 VLM 拆解指令...")
@@ -918,7 +815,6 @@ def main():
     print(f"[任务] 📋 共 {len(task_list)} 个任务:")
     for i, t in enumerate(task_list):
         print(f"  [{i+1}] pick = {t['pick']} → place = {t['place']}")
-
 
     # ============================
     # 5. 初始化共享状态
@@ -933,7 +829,7 @@ def main():
     threads = [
         threading.Thread(
             target=perception_thread,
-            args=(state, rs_env, cam_results, home_T_tcp2base),
+            args=(state, env, rs_env, cam_results, home_T_tcp2base),
             daemon=True,
             name="PerceptionThread",
         ),
