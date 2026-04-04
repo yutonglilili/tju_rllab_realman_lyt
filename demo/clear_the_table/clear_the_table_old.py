@@ -48,8 +48,7 @@ from multi_pointing_vllm_get_point_utils import (
 
 # 感知参数
 PERCEPTION_INTERVAL = 0.5       # 打点频率（秒），取决于 VLM 推理速度
-PLACE_Z_OFFSET = 0.15
-           # place 阶段 z 轴高度偏移（米）
+PLACE_Z_OFFSET = 0.15           # place 阶段 z 轴高度偏移（米）
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
 MOVE_CONTAINER_THRESHOLD = 0.10 # 容器移动检测阈值（米，10cm）
 

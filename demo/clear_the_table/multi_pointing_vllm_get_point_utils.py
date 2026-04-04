@@ -806,7 +806,7 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
 # =========================================================
 # Generate Task Table
 # =========================================================
-def generate_task_table_from_scene(
+def generate_task_from_scene(
     image_rgb,
     instruction,
     pick_candidates=None,
@@ -815,20 +815,12 @@ def generate_task_table_from_scene(
     """
     Generate pick-place task table from image + instruction.
 
-    Args:
-        image_rgb: RGB numpy image
-        instruction: natural language instruction
-        pick_candidates: optional list of pickable objects
-        place_candidates: optional list of place targets
-
     Returns:
-        dict:
         {
-            "num_tasks": N,
-            "tasks":[
-                {"pick":"...", "place":"..."}
-            ]
+            "pick":"...", 
+            "place":"..."
         }
+        or None
     """
 
     client = get_vlm_client()
@@ -842,8 +834,6 @@ def generate_task_table_from_scene(
             "tennis ball",
             "cup",
             "carrot",
-            "apple",
-            "mouse",
             "tiddy bear",
             "toy horse",
             "brush"
@@ -864,37 +854,42 @@ def generate_task_table_from_scene(
         1. A tabletop RGB image
         2. A human instruction
 
-        Your job is to generate a sequence of pick-and-place tasks.
-
         Instruction:
         {instruction}
 
-        Pick candidates (preferred names):
-        {pick_candidates}
+        Goal:
+        Find ONE pick-and-place task that the robot should execute NEXT.
 
-        Place candidates (preferred names):
-        {place_candidates}
+        Important concepts:
 
+        A task is considered ALREADY COMPLETED if:
+        - the object is already inside the target container
+        - or the object already satisfies the instruction
+
+        You MUST NOT return tasks that are already completed.
+        
         Rules:
 
-        1. Identify objects mentioned in the instruction and visible in the image.
-        2. If an object matches a candidate name, use that name.
-        3. If the object is not in the candidate list, you may create a new object name.
-        4. Each task must contain ONE pick object and ONE place target.
-        5. Tasks must be executable sequentially by a robot.
+        1. The picked object must match the instruction.
+        2. The object must be visible in the image.
+        3. The object should NOT already be inside the target container.
+        4. If multiple valid objects exist, choose the one closest to the robot.
+        5. Return ONLY one task.
 
         Return JSON ONLY.
 
         Format:
 
         {{
-        "num_tasks": N,
-        "tasks":[
-            {{
-                "pick":"object_name",
-                "place":"target_name"
-            }}
-        ]
+            "pick":"object_name",
+            "place":"target_name"
+        }}
+
+        If no valid task exists, return:
+
+        {{
+            "pick": null,
+            "place": null
         }}
     """
 
@@ -925,35 +920,17 @@ def generate_task_table_from_scene(
     # 结构清洗
     # -----------------------------
 
-    tasks = data.get("tasks", [])
+    pick = data.get("pick")
+    place = data.get("place")
 
-    if isinstance(tasks, dict):
-        tasks = [tasks]
-
-    cleaned_tasks = []
-
-    for t in tasks:
-
-        if not isinstance(t, dict):
-            continue
-
-        pick = t.get("pick", None)
-        place = t.get("place", None)
-
-        if pick is None or place is None:
-            continue
-
-        cleaned_tasks.append({
-            "pick": str(pick).strip(),
-            "place": str(place).strip()
-        })
+    if pick is None or place is None:
+        print("⚠️ No task detected")
+        return None
 
     result = {
-        "num_tasks": len(cleaned_tasks),
-        "tasks": cleaned_tasks
+        "pick": str(pick).strip(),
+        "place": str(place).strip()
     }
-
-    print("✅ Generated task table:", result)
 
     return result
 
