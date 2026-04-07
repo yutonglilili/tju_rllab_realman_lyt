@@ -465,16 +465,7 @@ def parse_multi_pick_place_tasks(text_prompt):
     import ast
 
     # ====== VLM call ======
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
-    from pointing_vllm_client import VLLMOnlineClient
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     prompt = f"""
         You are a robot task planner.
@@ -497,7 +488,7 @@ def parse_multi_pick_place_tasks(text_prompt):
     """
 
     response = client.client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=512,
         temperature=0.2,
@@ -608,11 +599,6 @@ def parse_multi_pick_place_tasks(text_prompt):
 # Get 2D Point
 # =========================================================
 def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path="debug_pointing_vllm.png", color=(0, 0, 255)):
-    # Model and server configuration
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
     # Sampling parameters
     greedy = False
     seed = 3407
@@ -628,11 +614,7 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
     video_do_sample_frames = True  # Enable frame sampling
 
     # Initialize client
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     height, width = image_rgb.shape[:2]
 
@@ -704,15 +686,7 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
 # =========================================================
 def check_grasp_success_vllm(image_rgb, object_name):
 
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     # =========================
     # 图像处理（关键）
@@ -773,7 +747,7 @@ def check_grasp_success_vllm(image_rgb, object_name):
     messages = client.prepare_messages_from_test_case(test_case)
 
     response = client.client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=messages,
         max_tokens=200,
         temperature=0.2,
@@ -817,15 +791,7 @@ def check_grasp_success_vllm(image_rgb, object_name):
 
 def check_place_success_vllm(image_rgb, object_name, container_name):
 
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     # =========================
     # 图像处理
@@ -886,7 +852,7 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
     messages = client.prepare_messages_from_test_case(test_case)
 
     response = client.client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=messages,
         max_tokens=200,
         temperature=0.2,
