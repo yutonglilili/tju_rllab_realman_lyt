@@ -25,7 +25,6 @@ from Robotic_Arm.rm_robot_interface import (
 
 JOINT_MAX_SPEED_DEG_S = 90.0
 SYNC_MOVEJ_SPEED_PERCENT = 80
-SYNC_MOVEP_SPEED_PERCENT = 80
 SYNC_MOVEL_SPEED_PERCENT = 80
 GRIPPER_SPEED = 30
 GRIPPER_TOLERANCE = 0.005
@@ -138,9 +137,9 @@ class RealmanDriver:
         self.arm.rm_write_single_register(param, GRIPPER_SPEED)
 
         # 限制速度，避免危险动作
-        self.arm.rm_set_arm_max_line_speed(0.4)
-        self.arm.rm_set_arm_max_line_acc(1.0)
-        self.arm.rm_set_arm_max_angular_speed(0.4)
+        self.arm.rm_set_arm_max_line_speed(0.1)
+        self.arm.rm_set_arm_max_line_acc(0.5)
+        self.arm.rm_set_arm_max_angular_speed(0.5)
         self.arm.rm_set_arm_max_angular_acc(1.0)
 
         # 限制关节速度，避免危险动作
@@ -164,23 +163,6 @@ class RealmanDriver:
         ret = self.arm.rm_movej(joint, SYNC_MOVEJ_SPEED_PERCENT, 0, 0, 1)
         return ret
 
-    def _move_pose_with_retry(self, pose, *, linear: bool):
-        move_fn = self.arm.rm_movel if linear else self.arm.rm_movej_p
-        speed_percent = SYNC_MOVEL_SPEED_PERCENT if linear else SYNC_MOVEP_SPEED_PERCENT
-        blend_radius = 0 if linear else 1
-
-        ret = move_fn(pose, speed_percent, r=blend_radius, connect=0, block=1)
-        if ret == 0:
-            return ret
-
-        for _ in range(100):
-            ret = move_fn(pose, speed_percent, r=blend_radius, connect=0, block=1)
-            if ret == 0:
-                return ret
-            time.sleep(0.02)
-
-        return ret
-
     def movep(self, pose):
         """
         笛卡尔空间运动(Pose Control, 阻塞)
@@ -191,13 +173,13 @@ class RealmanDriver:
         Returns:
             ret: SDK 返回码
         """
-        ret = self._move_pose_with_retry(pose, linear=False)
+        ret = self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=1, connect=0, block=1)
         if ret == 0:
             print("第 1 次就解出来了。")
             return ret
         if ret != 0:
             for i in range(100):
-                ret = self.arm.rm_movej_p(pose, SYNC_MOVEP_SPEED_PERCENT, r=1, connect=0, block=1)
+                ret = self.arm.rm_movej_p(pose, SYNC_MOVEL_SPEED_PERCENT, r=1, connect=0, block=1)
                 if ret == 0:
                     print(f"movep 第 {i+1} 次才解出来。")
                     return ret
@@ -207,16 +189,6 @@ class RealmanDriver:
             print(f"movep挂了，解了{i}次解不出来。")
             print("================================================")
             return ret
-
-    def movel(self, pose):
-        """Cartesian linear motion (blocking)."""
-        ret = self._move_pose_with_retry(pose, linear=True)
-        if ret != 0:
-            print("================================================")
-            print(f"pose: {pose}")
-            print("movel failed after retries.")
-            print("================================================")
-        return ret
 
     def movej_follow(self, joint):
         """关节空间跟随运动(用于异步流式控制)"""
@@ -326,10 +298,6 @@ class RealmanDriver:
         注意:
         - 通过读取当前位置轮询夹爪是否到位
         """
-        current_width = self.get_gripper()
-        if abs(current_width - width) < GRIPPER_TOLERANCE:
-            return
-
         value = realman_gripper_value_from_width(width)
 
         # 写入目标位置寄存器(258)
@@ -448,11 +416,7 @@ class SyncController:
             
         elif "pose" in action:
             pose_eef = pose_tcp2eef(action["pose"])     # 将上层的夹爪中心 TCP xyzrpy 转换为末端执行器 EEF xyzrpy, 传入 realman driver
-            motion_type = action.get("motion", "pose")
-            if motion_type == "linear":
-                move_ret = self.driver.movel(pose_eef)
-            else:
-                move_ret = self.driver.movep(pose_eef)
+            move_ret = self.driver.movep(pose_eef)
             
         state = self.get_state()
 
@@ -460,8 +424,7 @@ class SyncController:
             raise RuntimeError(f"机器人运动失败，ret={move_ret}")
 
         if "gripper" in action:
-            wait_gripper = action.get("wait_gripper", True)
-            self.driver.set_gripper(action["gripper"], wait=wait_gripper)
+            self.driver.set_gripper(action["gripper"], wait=True)
             state = self.get_state()
 
         return state

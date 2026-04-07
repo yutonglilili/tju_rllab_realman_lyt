@@ -40,7 +40,7 @@ from multi_pointing_vllm_get_point_utils import (
 # ═══════════════════════════════════════════════════
 
 # 感知参数
-PERCEPTION_INTERVAL = 0.5       # 打点频率（秒），取决于 VLM 推理速度
+PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
 TASK_DISCOVERY_INTERVAL = 2.0  # 没任务时监视频率
 PLACE_Z_OFFSET = 0.08           # place 阶段 z 轴高度偏移（米）
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
@@ -594,9 +594,11 @@ def build_action_list(env, target_T, home_T_tcp2base, curobo_planner, task_phase
         post_target_pose = realman_xyzrpy_from_T(post_target_T)
 
     # post 不传 gripper 状态
-    action_list = [{"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0},
-                   {"pose": target_pose, "gripper": target_gripper_state, "tag": 1},
-                   {"pose": post_target_pose, "tag": 2}]
+    action_list = [
+        {"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0, "motion": "pose", "wait_gripper": True},
+        {"pose": target_pose, "gripper": target_gripper_state, "tag": 1, "motion": "linear", "wait_gripper": True},
+        {"pose": post_target_pose, "tag": 2, "motion": "linear"},
+    ]
 
     return action_list
             
@@ -699,8 +701,22 @@ def execution_thread(state, env):
             elif "pose" in action:
                 step_action["pose"] = action["pose"]
 
+            if "motion" in action:
+                step_action["motion"] = action["motion"]
+
             if "gripper" in action:
                 step_action["gripper"] = action["gripper"]
+
+            if "wait_gripper" in action:
+                step_action["wait_gripper"] = action["wait_gripper"]
+
+            if state.abort_execution.is_set():
+                print("[执行] ⏹️ 下发动作前检测到中止信号，停止旧动作序列")
+                with state.lock:
+                    state.action_list = []
+                    state.action_index = 0
+                state.plan_ready.clear()
+                break
 
             # post阶段感知线程空转，避免影响执行
             if action["tag"] == 2:
@@ -727,6 +743,14 @@ def execution_thread(state, env):
                     state.need_replan.set()
                     break
                 continue
+
+            if state.abort_execution.is_set():
+                print("[执行] ⏹️ 动作执行完成后检测到重规划请求，停止后续动作")
+                with state.lock:
+                    state.action_list = []
+                    state.action_index = 0
+                state.plan_ready.clear()
+                break
 
             motion_fail_streak = 0
             with state.lock:
