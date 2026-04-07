@@ -528,10 +528,11 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
             Output JSON only: [{{"point_2d":[x,y]}}]
             x,y must be in [0,1000]
 
-        If the target is a basket:
-            The point MUST be inside the basket
-            The point MUST NOT be on any object inside the basket
-            Prefer a position near the center of the basket
+        If the target is a container:
+            The point MUST be inside the container
+            The point MUST NOT be on any object inside the container
+            The point MUST NOT be on the eage of the container
+            Prefer a position near the center of the container
         If the target is a normal object:
             Choose a point near the top-center of the object
             Avoid edges of the object
@@ -836,15 +837,19 @@ def generate_task_from_scene(
             "carrot",
             "tiddy bear",
             "toy horse",
-            "brush"
+            "brush",
+            "rubic's cube",
+            "red pen",
+            "glue stick",
         ]
 
     if place_candidates is None:
         place_candidates = [
             "pink plate",
             "white plate",
-            "blue bowl",
-            "basket"
+            "blue plate",
+            "basket",
+            "rubic's cube"
         ]
 
     prompt = f"""
@@ -857,24 +862,22 @@ def generate_task_from_scene(
         Instruction:
         {instruction}
 
+        Pick candidates (preferred names):
+        {pick_candidates}
+
+        Place candidates (preferred names):
+        {place_candidates}
+
         Goal:
-        Find ONE pick-and-place task that the robot should execute NEXT.
-
-        Important concepts:
-
-        A task is considered ALREADY COMPLETED if:
-        - the object is already inside the target container
-        - or the object already satisfies the instruction
-
-        You MUST NOT return tasks that are already completed.
+        According to the requirements described in the directive, find a object that should be picked and a container that should be placed into, and return the name of the object and the name of the container.
         
         Rules:
 
-        1. The picked object must match the instruction.
-        2. The object must be visible in the image.
-        3. The object should NOT already be inside the target container.
-        4. If multiple valid objects exist, choose the one closest to the robot.
-        5. Return ONLY one task.
+        1. Select an object that matches the type required by the instruction and is visible in the image.
+        2. Ignore any objects that are already inside the target container.
+        3. Never choose objects that are already in the container, even if they match the instruction.
+        4. If the current scene already satisfies the instruction (for example, all required objects are already inside the container or there are no valid objects to move), output empty values for both "pick" and "place".
+        5. Return the name of the object and the name of the container.
 
         Return JSON ONLY.
 
@@ -885,11 +888,11 @@ def generate_task_from_scene(
             "place":"target_name"
         }}
 
-        If no valid task exists, return:
+        If the instruction is already satisfied, output:
 
         {{
-            "pick": null,
-            "place": null
+            "pick": "",
+            "place": ""
         }}
     """
 
