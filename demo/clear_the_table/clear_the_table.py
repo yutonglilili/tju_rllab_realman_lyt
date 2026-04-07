@@ -30,6 +30,8 @@ from multi_pointing_vllm_get_point_utils import (
     check_grasp_success_vllm,
     check_place_success_vllm,
     generate_task_from_scene,
+    check_instruction_complete,
+    generate_tasks_from_scene,
 )
 
 
@@ -305,9 +307,6 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     
                     else:
                         # 回到感知模式，重新打点
-                        print("--------------------------------")
-                        print(f"重点检查")
-                        print("--------------------------------")
                         state.abort_execution.set()
                         state.plan_ready.clear()
 
@@ -402,12 +401,6 @@ def do_check_pick_success(env, rs_env, pick_name, point_2d=None,cam_results=None
         tcp_xyzrpy = env.get_state().pose
 
         dist = np.linalg.norm(object_xyzrpy[:3] - tcp_xyzrpy[:3])
-
-        print("--------------------------------")
-        print(f"object_xyz: {object_xyzrpy[:3]}")
-        print(f"tcp_xyz: {tcp_xyzrpy[:3]}")
-        print(f"dist: {dist}")
-        print("--------------------------------")
 
         if dist < PICK_SUCCESS_DIST_THRESHOLD:
             is_success_2 = True
@@ -747,6 +740,8 @@ def execution_thread(state, env):
 
 # 执行单个任务
 def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
+    if state.stop_all.is_set():
+        return False
 
     state.reset_state()
 
@@ -756,7 +751,12 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
         state.tracking_mode = True
         state.target_name = task['pick']
 
-    state.task_done.wait()
+    while not state.stop_all.is_set():
+        if state.task_done.wait(timeout=0.1):
+            break
+
+    if not state.task_done.is_set():
+        return False
 
     env.reset()
 
@@ -767,13 +767,22 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
 
 # 按照动作列表执行所有任务
 def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
+    if not task_list:
+        print("[主线程] 未生成有效任务列表，等待下一轮检测...")
+        return
 
     for i, task in enumerate(task_list):
+        if state.stop_all.is_set():
+            break
+
         print(f"\n{'='*60}")
         print(f"🚀 Task [{i+1}/{len(task_list)}]: pick={task['pick']} → place={task['place']}")
         print(f"{'='*60}")
 
         success = run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base)
+
+        if state.stop_all.is_set():
+            break
 
         if not success:
             print(f"⛔ Task [{i}] 失败，继续下一个任务。")
@@ -799,9 +808,12 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
             print("[主线程] 🔄 最后一个任务完成，Reset...")
             env.reset()
 
-    print("\n🎉 所有任务完成!")
+    if state.stop_all.is_set():
+        print("\n[主线程] 收到停止信号，结束当前任务循环。")
+    else:
+        print("\n🎉 所有任务完成!")
 
-# 按照模糊指令执行所有任务
+# 按照模糊指令执行所有任务（一次只输出一组pnp目标）
 def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
     """
     根据自然语言指令持续执行任务：
@@ -812,7 +824,7 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
 
     print(f"[主线程] 🧠 指令: {instruction}")
 
-    while True:
+    while not state.stop_all.is_set():
 
         # 获取当前图像
         obs = rs_env.step()
@@ -826,6 +838,8 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
             # 如果发现任务，则执行
             if task:
                 run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base)
+                if state.stop_all.is_set():
+                    break
             
             else:
                 print("[主线程] 未发现可执行任务，等待...")
@@ -834,8 +848,57 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
 
         except Exception as e:
             print(f"[主线程] 异常: {e}")
-    
+            if state.stop_all.is_set():
+                break
 
+# 按照模糊指令持续完成任务（一次生成多组pnp目标）
+def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+    """
+    根据自然语言指令持续执行任务：
+    1. 调用 VLM 判断当前场景是否满足指令的要求，如果满足则定频检测，不满足则生成 pnp list。
+    2. 按照list依次执行pnp任务，并在完成一组pnp任务后更新list（将已完成的pnp任务从list中移除，调整新放的和拿走的物体）
+    """
+
+    print(f"[主线程] 🧠 指令: {instruction}")
+
+    tasks_list = None
+
+    while not state.stop_all.is_set():
+
+        # 获取当前图像
+        obs = rs_env.step()
+        image_rgb = obs["rgb"]
+
+        try:
+            # 判断当前场景是否满足顶层指令的要求
+            is_complete, reason = check_instruction_complete(image_rgb, instruction)
+            print(f"is_complete: {is_complete}, reason: {reason}")
+
+            if is_complete:
+                print("[主线程] 当前场景满足指令的要求，开始定频检测")
+                time.sleep(TASK_DISCOVERY_INTERVAL)
+                continue
+            else:
+                tasks_list = generate_tasks_from_scene(image_rgb, instruction)
+                print(f"tasks_list: {tasks_list}")
+
+                if not tasks_list:
+                    print("[主线程] 未生成有效任务，等待下一轮检测...")
+                    time.sleep(TASK_DISCOVERY_INTERVAL)
+                    continue
+
+                run_all_tasks(state, env, rs_env, cam_results, tasks_list, home_T_tcp2base)
+                if state.stop_all.is_set():
+                    break
+        
+        except Exception as e:
+            print(f"[主线程] 异常: {e}")
+            time.sleep(TASK_DISCOVERY_INTERVAL)
+            if state.stop_all.is_set():
+                break
+            continue
+
+            
 # ═══════════════════════════════════════════════════
 # 主程序入口
 # ═══════════════════════════════════════════════════
@@ -876,8 +939,8 @@ def main():
     # 4. 指令输入
     # ============================
 
-    instruction = "Clear the table. Pick all toys on the table and place them on the white plate."
-    # instruction = "Pick the baseball and place it on the rubic's cube."
+    # instruction = "Clear the table. Pick all toys on the table and place them on the white plate."
+    instruction = "Pick the baseball and place it on the rubic's cube."
 
     # ============================
     # 5. 初始化共享状态

@@ -1,5 +1,5 @@
 """
-用于测试 gradio 界面
+此版本支持连续 pnp 任务，并在每个任务中使用感知，规划，执行三线程协同工作，实现物体跟踪，错误检测，重规划等功能。
 """
 import copy
 import json
@@ -30,6 +30,8 @@ from multi_pointing_vllm_get_point_utils import (
     check_grasp_success_vllm,
     check_place_success_vllm,
     generate_task_from_scene,
+    check_instruction_complete,
+    generate_tasks_from_scene,
 )
 
 
@@ -40,9 +42,9 @@ from multi_pointing_vllm_get_point_utils import (
 # 感知参数
 PERCEPTION_INTERVAL = 0.5       # 打点频率（秒），取决于 VLM 推理速度
 TASK_DISCOVERY_INTERVAL = 2.0  # 没任务时监视频率
-PLACE_Z_OFFSET = 0.15           # place 阶段 z 轴高度偏移（米）
+PLACE_Z_OFFSET = 0.08           # place 阶段 z 轴高度偏移（米）
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
-MOVE_CONTAINER_THRESHOLD = 0.15 # 容器移动检测阈值（米，10cm）
+MOVE_CONTAINER_THRESHOLD = 0.20 # 容器移动检测阈值（米，10cm）
 
 # 规划参数
 SAFE_HEIGHT = 0.06              # 安全高度（米）
@@ -52,6 +54,8 @@ TRAJECTORY_DOWNSAMPLE = 2       # 轨迹下采样率
 CONTROL_INTERVAL = 0.0          # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
 GRIPPER_OPEN = 0.09             # 夹爪全开
 GRIPPER_CLOSE = 0.03            # 夹爪全闭
+# 连续运动失败（SyncController 抛 RuntimeError）达到此次数则放弃本段轨迹，触发 need_replan 重新规划
+MAX_CONSECUTIVE_MOTION_FAILURES = 5
 
 # 任务参数
 MAX_PICK_RETRIES = 5            # pick 最大重试次数
@@ -65,7 +69,7 @@ CHECK_PICK_CROP_SIZE = 560
 CHECK_PLACE_CROP_SIZE = 640
 
 # 抓取/放置成功距离阈值
-PICK_SUCCESS_DIST_THRESHOLD = 0.1
+PICK_SUCCESS_DIST_THRESHOLD = 0.10
 PLACE_SUCCESS_DIST_THRESHOLD = 0.20
 
 # 保存图像路径
@@ -303,6 +307,12 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     
                     else:
                         # 回到感知模式，重新打点
+                        print("--------------------------------")
+                        print(f"重点检查")
+                        print("--------------------------------")
+                        state.abort_execution.set()
+                        state.plan_ready.clear()
+
                         with state.lock:
                             state.latest_point_2d = None
                             state.latest_point_3d = None
@@ -384,17 +394,23 @@ def do_check_pick_success(env, rs_env, pick_name, point_2d=None,cam_results=None
         is_success_1 = check_grasp_success_vllm(image_for_check, pick_name)
 
         # 2. 计算抓取点与物体中心点的距离
+        # 物体 xyz 坐标
         object_2d = get_point_vllm(image_rgb,f"Point the {pick_name}",save_path=None)
-        print("--------------------------------")
-        print(f"object_2d: {object_2d}")
+
         object_current_T = make_target_T(obs,int(object_2d[0]),int(object_2d[1]),rs_env,cam_results,home_T_tcp2base)
         object_xyzrpy = realman_xyzrpy_from_T(object_current_T)
-        print("--------------------------------")
-
-        tcp_current_T = make_target_T(obs,int(point_2d[0]),int(point_2d[1]),rs_env,cam_results,home_T_tcp2base)
-        tcp_xyzrpy = realman_xyzrpy_from_T(tcp_current_T)
+        
+        # 夹爪 xyz 坐标
+        tcp_xyzrpy = env.get_state().pose
 
         dist = np.linalg.norm(object_xyzrpy[:3] - tcp_xyzrpy[:3])
+
+        print("--------------------------------")
+        print(f"object_xyz: {object_xyzrpy[:3]}")
+        print(f"tcp_xyz: {tcp_xyzrpy[:3]}")
+        print(f"dist: {dist}")
+        print("--------------------------------")
+
         if dist < PICK_SUCCESS_DIST_THRESHOLD:
             is_success_2 = True
         else:
@@ -403,8 +419,8 @@ def do_check_pick_success(env, rs_env, pick_name, point_2d=None,cam_results=None
         if is_success_1 and is_success_2:
             print(f"VLM 检测抓取成功，距离检测抓取成功，抓取成功!")
             return True
-        elif is_success_1:
-            print(f"VLM 检测抓取成功，距离检测抓取失败，抓取成功!")
+        elif is_success_2:
+            print(f"VLM 检测抓取失败，距离检测抓取成功，抓取成功!")
             return True
         else:
             print(f"VLM 检测抓取失败，距离检测抓取失败，抓取失败!")
@@ -442,7 +458,7 @@ def do_check_place_success(rs_env, pick_name, place_name, point_2d=None,cam_resu
         
         is_success_1 = check_place_success_vllm(image_for_check, pick_name, place_name)
         
-        # 2. 计算抓取点与物体中心点的距离
+        # 2. 计算物体与容器的距离
         object_2d = get_point_vllm(image_rgb,f"Point the {pick_name}",save_path=None)
         object_current_T = make_target_T(obs,int(object_2d[0]),int(object_2d[1]),rs_env,cam_results,home_T_tcp2base)
         object_xyzrpy = realman_xyzrpy_from_T(object_current_T)
@@ -458,8 +474,8 @@ def do_check_place_success(rs_env, pick_name, place_name, point_2d=None,cam_resu
         if is_success_1 and is_success_2:
             print(f"VLM 检测放置成功，距离检测放置成功，放置成功!")
             return True
-        elif is_success_1:
-            print(f"VLM 检测放置成功，距离检测放置失败，放置成功!")
+        elif is_success_2:
+            print(f"VLM 检测放置失败，距离检测放置成功，放置成功!")
             return True
         else:
             print(f"VLM 检测放置失败，距离检测放置失败，放置失败!")
@@ -640,6 +656,7 @@ def execution_thread(state, env):
     - 支持中断 abort_execution
     - 支持重新开始 plan_ready
     - 动作列表执行完毕
+    - 连续运动失败达到 MAX_CONSECUTIVE_MOTION_FAILURES 时放弃本段轨迹并 need_replan
     """
     print("[执行线程] 已启动")
 
@@ -652,6 +669,7 @@ def execution_thread(state, env):
             continue
 
         print("[执行] ▶️ 开始执行动作序列")
+        motion_fail_streak = 0
 
         while not state.stop_all.is_set():
 
@@ -671,13 +689,13 @@ def execution_thread(state, env):
                 # 检查是否执行完毕
                 if state.action_index >= len(state.action_list):
                     state.plan_ready.clear()
+                    state.tracking_mode = False
                     state.verify_mode = True   # 感知线程切换到验证模式
                     print("[执行] ✅ 动作序列执行完成")
                     break
 
-                # 取出当前动作
+                # 取出当前动作（成功执行后再推进 action_index，失败则重试本步）
                 action = state.action_list[state.action_index]
-                state.action_index += 1
 
             # === 执行动作 ===
 
@@ -699,7 +717,29 @@ def execution_thread(state, env):
                     state.tracking_mode = False
                     state.verify_mode = False
 
-            env.step(step_action)
+            try:
+                env.step(step_action)
+            except RuntimeError as e:
+                motion_fail_streak += 1
+                print(
+                    f"[执行] ⚠️ 运动失败 ({motion_fail_streak}/{MAX_CONSECUTIVE_MOTION_FAILURES}): {e}"
+                )
+                if motion_fail_streak >= MAX_CONSECUTIVE_MOTION_FAILURES:
+                    print(
+                        "[执行] ⛔ 连续运动失败达到上限，终止本段轨迹并请求重新规划"
+                    )
+                    with state.lock:
+                        state.action_list = []
+                        state.action_index = 0
+                    state.abort_execution.set()
+                    state.plan_ready.clear()
+                    state.need_replan.set()
+                    break
+                continue
+
+            motion_fail_streak = 0
+            with state.lock:
+                state.action_index += 1
 
     print("[执行线程] 已停止")
 
@@ -763,7 +803,7 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
 
     print("\n🎉 所有任务完成!")
 
-# 按照模糊指令执行所有任务
+# 按照模糊指令执行所有任务（一次只输出一组pnp目标）
 def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
     """
     根据自然语言指令持续执行任务：
@@ -783,6 +823,7 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
         try:
             # 获取一组 pnp 任务目标
             task = generate_task_from_scene(image_rgb, instruction)
+            print(f"task: {task}")
 
             # 如果发现任务，则执行
             if task:
@@ -795,144 +836,143 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
 
         except Exception as e:
             print(f"[主线程] 异常: {e}")
-    
 
-# ═══════════════════════════════════════════════════
-# 主程序入口（默认参数可被 Gradio / 其他调用方覆盖）
-# ═══════════════════════════════════════════════════
-
-# DEFAULT_ROBOT_IP = "192.168.101.19"
-DEFAULT_ROBOT_IP = "192.168.101.666"
-DEFAULT_REALSENSE_SERIAL = "f1471338"
-DEFAULT_CAM_RESULTS_PATH = "/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json"
-DEFAULT_INSTRUCTION = (
-    "Clear the table. Pick all toys on the table and place them on the pink plate."
-)
-
-_ui_session_lock = threading.Lock()
-_ui_session = None  # {"state": SharedState, "env": RealmanEnv}，供网页端停止
-
-
-def stop_clear_table_session():
-    """请求停止当前会话（设置 SharedState.stop_all）。"""
-    with _ui_session_lock:
-        sess = _ui_session
-    if sess and sess.get("state") is not None:
-        sess["state"].stop_all.set()
-        return True
-    return False
-
-
-def run_clear_table_session(
-    instruction,
-    robot_ip=None,
-    realsense_serial=None,
-    cam_results_path=None,
-    stdout_tee=None,
-):
+# 按照模糊指令持续完成任务（一次生成多组pnp目标）
+def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
     """
-    运行一整次清桌会话（与原先 main() 逻辑一致）。
-
-    Args:
-        instruction: 自然语言任务指令，传给 generate_task_from_scene。
-        robot_ip / realsense_serial / cam_results_path: 为 None 时使用对应 DEFAULT_*。
-        stdout_tee: 若传入则在此会话期间将 sys.stdout 替换为该对象（便于 Gradio 捕获日志）。
+    根据自然语言指令持续执行任务：
+    1. 调用 VLM 判断当前场景是否满足指令的要求，如果满足则定频检测，不满足则生成 pnp list。
+    2. 按照list依次执行pnp任务，并在完成一组pnp任务后更新list（将已完成的pnp任务从list中移除，调整新放的和拿走的物体）
     """
-    global _ui_session
 
-    robot_ip = robot_ip or DEFAULT_ROBOT_IP
-    realsense_serial = realsense_serial or DEFAULT_REALSENSE_SERIAL
-    cam_results_path = cam_results_path or DEFAULT_CAM_RESULTS_PATH
+    print(f"[主线程] 🧠 指令: {instruction}")
 
-    old_stdout = sys.stdout
-    if stdout_tee is not None:
-        sys.stdout = stdout_tee
+    tasks_list = None
 
-    env = None
-    state = None
-    try:
-        # ============================
-        # 1. 初始化环境
-        # ============================
-        env = RealmanEnv(robot_ip=robot_ip, mode="sync")
-        rs_env = Open3dRealsenseEnv(realsense_serial)
+    while True:
 
-        with open(cam_results_path, "r") as f:
-            cam_results = json.load(f)
+        # 获取当前图像
+        obs = rs_env.step()
+        image_rgb = obs["rgb"]
 
-        # ============================
-        # 2. 初始化 curobo
-        # ============================
-        curobo_planner = None  # 替换为实际的 curobo 规划器
-
-        # ============================
-        # 3. 获取初始位姿
-        # ============================
-        env.reset()
-        robot_state = env.get_state()
-        home_T_tcp2base = T_from_realman_xyzrpy(robot_state.pose)
-
-        # ============================
-        # 4. 共享状态与工作线程
-        # ============================
-        state = SharedState()
-        with _ui_session_lock:
-            _ui_session = {"state": state, "env": env}
-
-        print("\n[启动] 启动工作线程...")
-        threads = [
-            threading.Thread(
-                target=perception_thread,
-                args=(state, env, rs_env, cam_results, home_T_tcp2base),
-                daemon=True,
-                name="PerceptionThread",
-            ),
-            threading.Thread(
-                target=planning_thread,
-                args=(state, env, curobo_planner, home_T_tcp2base),
-                daemon=True,
-                name="PlanningThread",
-            ),
-            threading.Thread(
-                target=execution_thread,
-                args=(state, env),
-                daemon=True,
-                name="ExecutionThread",
-            ),
-        ]
-        for t in threads:
-            t.start()
-            print(f"  ✅ {t.name} 已启动")
-
-        print("\n[运行] 开始执行任务...\n")
-        print(f"[运行] 指令: {instruction}\n")
         try:
-            run_all_tasks_by_instruction(
-                state, env, rs_env, cam_results, instruction, home_T_tcp2base
-            )
-        except KeyboardInterrupt:
-            print("\n[停止] 收到键盘中断，正在停止...")
-        except Exception as e:
-            print(f"\n[错误] 未捕获异常: {e}")
-            import traceback
-            traceback.print_exc()
-    finally:
-        print("[清理] 停止所有线程...")
-        if state is not None:
-            state.stop_all.set()
-        time.sleep(0.5)
-        if env is not None:
-            print("[清理] 关闭环境...")
-            env.close()
-        print("[完成] 程序退出")
-        with _ui_session_lock:
-            _ui_session = None
-        if stdout_tee is not None:
-            sys.stdout = old_stdout
+            # 判断当前场景是否满足顶层指令的要求
+            is_complete, reason = check_instruction_complete(image_rgb, instruction)
+            print(f"is_complete: {is_complete}, reason: {reason}")
 
+            if is_complete:
+                print("[主线程] 当前场景满足指令的要求，开始定频检测")
+                time.sleep(TASK_DISCOVERY_INTERVAL)
+                continue
+            else:
+                tasks_list = generate_tasks_from_scene(image_rgb, instruction)
+                print(f"tasks_list: {tasks_list}")
+
+                run_all_tasks(state, env, rs_env, cam_results, tasks_list, home_T_tcp2base)
+        
+        except Exception as e:
+            print(f"[主线程] 异常: {e}")
+            time.sleep(TASK_DISCOVERY_INTERVAL)
+            continue
+
+            
+# ═══════════════════════════════════════════════════
+# 主程序入口
+# ═══════════════════════════════════════════════════
 
 def main():
-    run_clear_table_session(DEFAULT_INSTRUCTION)
+
+    # ============================
+    # 1. 初始化环境
+    # ============================
+    
+    # 左臂
+    env = RealmanEnv(robot_ip="192.168.101.19", mode="sync")
+
+    rs_env = Open3dRealsenseEnv("f1471338")
+
+    cam_results_path = "/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json"
+    with open(cam_results_path, "r") as f:
+        cam_results = json.load(f)
+
+    # ============================
+    # 2. 初始化 curobo
+    # ============================
+
+    # curobo_planner = init_curobo(robot_config_path)
+    # curobo_planner.warmup()
+    curobo_planner = None  # 替换为实际的 curobo 规划器
+
+    # ============================
+    # 3. 获取初始位姿
+    # ============================
+
+    env.reset()
+
+    robot_state = env.get_state()
+    home_T_tcp2base = T_from_realman_xyzrpy(robot_state.pose)
+
+    # ============================
+    # 4. 指令输入
+    # ============================
+
+    # instruction = "Clear the table. Pick all toys on the table and place them on the white plate."
+    instruction = "Pick the baseball and place it on the rubic's cube."
+
+    # ============================
+    # 5. 初始化共享状态
+    # ============================
+
+    state = SharedState()
+
+    # ============================
+    # 6. 启动三个工作线程
+    # ============================
+    print("\n[启动] 启动工作线程...")
+    threads = [
+        threading.Thread(
+            target=perception_thread,
+            args=(state, env, rs_env, cam_results, home_T_tcp2base),
+            daemon=True,
+            name="PerceptionThread",
+        ),
+        threading.Thread(
+            target=planning_thread,
+            args=(state, env, curobo_planner, home_T_tcp2base),
+            daemon=True,
+            name="PlanningThread",
+        ),
+        threading.Thread(
+            target=execution_thread,
+            args=(state, env),
+            daemon=True,
+            name="ExecutionThread",
+        ),
+    ]
+    for t in threads:
+        t.start()
+        print(f"  ✅ {t.name} 已启动")
+
+
+    # ============================
+    # 7. 主线程：调度任务
+    # ============================
+    print("\n[运行] 开始执行任务...\n")
+    try:
+        run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, home_T_tcp2base)
+    except KeyboardInterrupt:
+        print("\n[停止] 收到键盘中断，正在停止...")
+    except Exception as e:
+        print(f"\n[错误] 未捕获异常: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("[清理] 停止所有线程...")
+        state.stop_all.set()
+        time.sleep(0.5)
+        print("[清理] 关闭环境...")
+        env.close()
+        print("[完成] 程序退出")
 
 
 if __name__ == "__main__":

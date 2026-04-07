@@ -57,141 +57,19 @@ def save_image_tmp(image_rgb):
 
     return TMP_IMAGE_PATH
 
-def _parse_json_candidate(text: str):
-    for parser in (json.loads, ast.literal_eval):
-        try:
-            return parser(text)
-        except Exception:
-            continue
-    return None
-
-
 def extract_first_json(text: str):
-    """Extract the first JSON-like object or array from model output."""
-    if not isinstance(text, str) or not text.strip():
+    """Extract first JSON object from model output"""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+
+    if match is None:
         raise RuntimeError("No JSON found in model output")
 
-    cleaned = re.sub(
-        r"```(?:json|python|text)?\s*(.*?)\s*```",
-        r"\1",
-        text.strip(),
-        flags=re.DOTALL | re.IGNORECASE,
-    ).strip()
+    json_str = match.group()
 
-    parsed = _parse_json_candidate(cleaned)
-    if parsed is not None:
-        return parsed
-
-    openers = {"{": "}", "[": "]"}
-    for start, char in enumerate(cleaned):
-        if char not in openers:
-            continue
-
-        closer = openers[char]
-        depth = 0
-        in_string = False
-        escape = False
-
-        for end in range(start, len(cleaned)):
-            current = cleaned[end]
-
-            if in_string:
-                if escape:
-                    escape = False
-                elif current == "\\":
-                    escape = True
-                elif current == '"':
-                    in_string = False
-                continue
-
-            if current == '"':
-                in_string = True
-                continue
-
-            if current == char:
-                depth += 1
-            elif current == closer:
-                depth -= 1
-
-                if depth == 0:
-                    candidate = cleaned[start:end + 1]
-                    parsed = _parse_json_candidate(candidate)
-                    if parsed is not None:
-                        return parsed
-                    break
-
-    raise RuntimeError(f"Failed to parse JSON from model output: {text[:200]!r}")
-
-
-def _unwrap_single_item(data):
-    while isinstance(data, list) and len(data) == 1 and isinstance(data[0], (dict, list)):
-        data = data[0]
-    return data
-
-
-def _normalize_task_entry(item):
-    if not isinstance(item, dict):
-        return None
-
-    pick = item.get("pick")
-    place = item.get("place")
-
-    if pick is None or place is None:
-        return None
-
-    pick = str(pick).strip()
-    place = str(place).strip()
-
-    if not pick or not place:
-        return None
-
-    return {
-        "pick": pick,
-        "place": place,
-    }
-
-
-def _normalize_task_list(data):
-    data = _unwrap_single_item(data)
-
-    if isinstance(data, dict) and "tasks" in data:
-        data = data["tasks"]
-
-    if isinstance(data, dict):
-        task = _normalize_task_entry(data)
-        return [task] if task is not None else []
-
-    if not isinstance(data, list):
-        return []
-
-    tasks = []
-    for item in data:
-        item = _unwrap_single_item(item)
-
-        if isinstance(item, dict) and "tasks" in item:
-            tasks.extend(_normalize_task_list(item["tasks"]))
-            continue
-
-        task = _normalize_task_entry(item)
-        if task is not None:
-            tasks.append(task)
-
-    return tasks
-
-
-def _normalize_completion_result(data):
-    data = _unwrap_single_item(data)
-
-    if isinstance(data, dict):
-        return bool(data.get("completed", False)), str(data.get("reason", "")).strip()
-
-    if isinstance(data, list):
-        for item in data:
-            item = _unwrap_single_item(item)
-            if isinstance(item, dict) and ("completed" in item or "reason" in item):
-                return bool(item.get("completed", False)), str(item.get("reason", "")).strip()
-
-    raise RuntimeError(f"Unexpected completion result format: {data!r}")
+    try:
+        return json.loads(json_str)
+    except Exception:
+        return ast.literal_eval(json_str)
 
 
 # =========================================================
@@ -1039,13 +917,19 @@ def generate_task_from_scene(
     # 结构清洗
     # -----------------------------
 
-    tasks = _normalize_task_list(data)
+    pick = data.get("pick")
+    place = data.get("place")
 
-    if not tasks:
+    if pick is None or place is None:
         print("⚠️ No task detected")
         return None
 
-    return tasks[0]
+    result = {
+        "pick": str(pick).strip(),
+        "place": str(place).strip()
+    }
+
+    return result
 
 
 # 生成多组 pnp 目标的名字
@@ -1184,10 +1068,27 @@ def generate_tasks_from_scene(
     # 结构清洗
     # -----------------------------
 
-    tasks = _normalize_task_list(data)
-
-    if not tasks:
+    if data is None:
         print("⚠️ No task detected")
+        return []
+
+    if not isinstance(data, list):
+        print("⚠️ Unexpected format")
+        return []
+
+    tasks = []
+
+    for item in data:
+        pick = item.get("pick")
+        place = item.get("place")
+
+        if pick is None or place is None:
+            continue
+
+        tasks.append({
+            "pick": str(pick).strip(),
+            "place": str(place).strip()
+        })
 
     return tasks
 
@@ -1246,8 +1147,13 @@ def check_instruction_complete(image_rgb, instruction):
 
     data = extract_first_json(content)
 
-    return _normalize_completion_result(data)
+    completed = bool(data.get("completed", False))
+    reason = str(data.get("reason", "")).strip()
+
+    return completed, reason
 
 
 if __name__ == "__main__":
     print(get_point_vllm(np.array(Image.open("aff.png")), "you need to grasp the mug"))
+
+
