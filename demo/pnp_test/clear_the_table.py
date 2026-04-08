@@ -42,6 +42,7 @@ from multi_pointing_vllm_get_point_utils import (
 # 感知参数
 PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
 TASK_DISCOVERY_INTERVAL = 2.0  # 没任务时监视频率
+PICK_Z_OFFSET = 0.01           # pick 阶段 z 轴高度偏移（米）
 PLACE_Z_OFFSET = 0.08           # place 阶段 z 轴高度偏移（米）
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
 MOVE_CONTAINER_THRESHOLD = 0.20 # 容器移动检测阈值（米，10cm）
@@ -223,6 +224,10 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
                 # 2D → 3D 转换
                 target_T = make_target_T(obs, int(point_2d[0]), int(point_2d[1]), rs_env, cam_results, home_T_tcp2base)
+
+                # 对 pick 阶段修正 z 轴高度
+                if task_phase == TaskPhase.PICK:
+                    target_T = make_lift_T(target_T, lift_z=PICK_Z_OFFSET)
 
                 # 对 place 阶段修正 z 轴高度
                 if task_phase == TaskPhase.PLACE:
@@ -596,8 +601,8 @@ def build_action_list(env, target_T, home_T_tcp2base, curobo_planner, task_phase
     # post 不传 gripper 状态
     action_list = [
         {"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0, "motion": "pose", "wait_gripper": True},
-        {"pose": target_pose, "gripper": target_gripper_state, "tag": 1, "motion": "linear", "wait_gripper": True},
-        {"pose": post_target_pose, "tag": 2, "motion": "linear"},
+        {"pose": target_pose, "gripper": target_gripper_state, "tag": 1, "motion": "pose", "wait_gripper": True},
+        {"pose": post_target_pose, "tag": 2, "motion": "pose"},
     ]
 
     return action_list
@@ -875,8 +880,8 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
             if state.stop_all.is_set():
                 break
 
-# 按照模糊指令持续完成任务（一次生成多组pnp目标）
-def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+# 按照模糊指令持续完成任务（一次生成多组pnp目标），完成列表后持续监控
+def run_all_tasks_by_instruction_with_list_and_monitor(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
     """
     根据自然语言指令持续执行任务：
     1. 调用 VLM 判断当前场景是否满足指令的要求，如果满足则定频检测，不满足则生成 pnp list。
@@ -925,6 +930,54 @@ def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, inst
                 break
             continue
 
+# 按照模糊指令持续完成任务（一次生成多组pnp目标），完成列表后如果认为满足指令则停止
+def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+    """
+    根据自然语言指令持续执行任务：
+    1. 调用 VLM 判断当前场景是否满足指令的要求，如果满足则定频检测，不满足则生成 pnp list。
+    2. 按照list依次执行pnp任务，并在完成一组pnp任务后更新list（将已完成的pnp任务从list中移除，调整新放的和拿走的物体）
+    """
+
+    print(f"[主线程] 🧠 指令: {instruction}")
+
+    tasks_list = None
+
+    while not state.stop_all.is_set():
+
+        # 获取当前图像
+        obs = rs_env.step()
+        image_rgb = obs["rgb"]
+
+        try:
+            # 判断当前场景是否满足顶层指令的要求
+            check_start = time.perf_counter()
+            is_complete, reason = check_instruction_complete(image_rgb, instruction)
+            check_elapsed = time.perf_counter() - check_start
+            print(f"[主线程] 完成检测耗时: {check_elapsed:.2f}s")
+            print(f"is_complete: {is_complete}, reason: {reason}")
+
+            if is_complete:
+                print("[主线程] 当前场景满足指令的要求，停止执行")
+                break
+            else:
+                tasks_list = generate_tasks_from_scene(image_rgb, instruction)
+                print(f"tasks_list: {tasks_list}")
+
+                if not tasks_list:
+                    print("[主线程] 未生成有效任务，等待下一轮检测...")
+                    time.sleep(TASK_DISCOVERY_INTERVAL)
+                    continue
+
+                run_all_tasks(state, env, rs_env, cam_results, tasks_list, home_T_tcp2base)
+                if state.stop_all.is_set():
+                    break
+        
+        except Exception as e:
+            print(f"[主线程] 异常: {e}")
+            time.sleep(TASK_DISCOVERY_INTERVAL)
+            if state.stop_all.is_set():
+                break
+            continue
             
 # ═══════════════════════════════════════════════════
 # 主程序入口
