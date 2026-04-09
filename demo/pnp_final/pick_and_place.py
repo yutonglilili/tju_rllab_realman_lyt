@@ -26,12 +26,14 @@ from pick_and_place_utils import (
     crop_image_around_point,
 )
 from multi_pointing_vllm_get_point_utils import (
+    generate_tasks_from_scene_with_failure_reason,
     get_point_vllm,
     check_grasp_success_vllm,
     check_place_success_vllm,
     generate_task_from_scene,
     check_instruction_complete,
     generate_tasks_from_scene,
+    generate_tasks_from_scene_with_failure_reason,
 )
 
 
@@ -41,11 +43,13 @@ from multi_pointing_vllm_get_point_utils import (
 
 # 感知参数
 PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
-TASK_DISCOVERY_INTERVAL = 2.0  # 没任务时监视频率
-PICK_Z_OFFSET = 0.01           # pick 阶段 z 轴高度偏移（米）
-PLACE_Z_OFFSET = 0.08           # place 阶段 z 轴高度偏移（米）
+TASK_DISCOVERY_INTERVAL = 2.0   # 没任务时监视频率
+
+PICK_Z_OFFSET = 0.005            # pick 阶段 z 轴高度偏移（米）
+PLACE_Z_OFFSET = 0.09           # place 阶段 z 轴高度偏移（米）
+
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
-MOVE_CONTAINER_THRESHOLD = 0.20 # 容器移动检测阈值（米，10cm）
+MOVE_CONTAINER_THRESHOLD = 0.20 # 容器移动检测阈值（米，20cm）
 
 # 规划参数
 SAFE_HEIGHT = 0.06              # 安全高度（米）
@@ -53,8 +57,10 @@ TRAJECTORY_DOWNSAMPLE = 2       # 轨迹下采样率
 
 # 执行参数
 CONTROL_INTERVAL = 0.0          # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
+
 GRIPPER_OPEN = 0.09             # 夹爪全开
 GRIPPER_CLOSE = 0.03            # 夹爪全闭
+
 # 连续运动失败（SyncController 抛 RuntimeError）达到此次数则放弃本段轨迹，触发 need_replan 重新规划
 MAX_CONSECUTIVE_MOTION_FAILURES = 5
 
@@ -66,6 +72,7 @@ MAX_PLACE_RETRIES = 5           # place 最大重试次数
 CHECK_PICK_SUCCESS_MODE = 1
 CHECK_PLACE_SUCCESS_MODE = 1
 
+# 检测裁剪区域大小
 CHECK_PICK_CROP_SIZE = 560
 CHECK_PLACE_CROP_SIZE = 640
 
@@ -264,7 +271,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                             continue
 
                         if dist > threshold:
-                            # 目标移动了！
+                            # 目标移动了
                             state.last_stable_point_3d = target_xyz.copy()
                             state.point_changed = True
                             state.abort_execution.set() # 中止当前执行
@@ -794,7 +801,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
     else:
         return False
 
-# 按照动作列表执行所有任务
+# 按照明确的动作列表执行所有任务
 def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
     if not task_list:
         print("[主线程] 未生成有效任务列表，等待下一轮检测...")
@@ -950,10 +957,7 @@ def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, inst
 
         try:
             # 判断当前场景是否满足顶层指令的要求
-            check_start = time.perf_counter()
             is_complete, reason = check_instruction_complete(image_rgb, instruction)
-            check_elapsed = time.perf_counter() - check_start
-            print(f"[主线程] 完成检测耗时: {check_elapsed:.2f}s")
             print(f"is_complete: {is_complete}, reason: {reason}")
 
             if is_complete:

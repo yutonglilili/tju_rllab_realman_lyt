@@ -57,6 +57,7 @@ def save_image_tmp(image_rgb):
 
     return TMP_IMAGE_PATH
 
+
 def _parse_json_candidate(text: str):
     for parser in (json.loads, ast.literal_eval):
         try:
@@ -860,9 +861,6 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
 
     content = response.choices[0].message.content.strip()
 
-    # ("[VLM place check raw output]")
-    # print(content)
-
     # =========================
     # 提取JSON
     # =========================
@@ -937,7 +935,8 @@ def generate_task_from_scene(
             "white plate",
             "blue plate",
             "basket",
-            "rubic's cube"
+            "rubic's cube",
+            "brown shelf"
         ]
 
     prompt = f"""
@@ -949,6 +948,12 @@ def generate_task_from_scene(
 
         Instruction:
         {instruction}
+
+        Pick candidates:
+        {pick_candidates}
+
+        Place candidates:
+        {place_candidates}
 
         Goal:
         According to the requirements described in the directive, find a object that should be picked and a container that should be placed into, and return the name of the object and the name of the container.
@@ -1058,8 +1063,13 @@ def generate_tasks_from_scene(
             "white plate",
             "blue plate",
             "basket",
-            "rubic's cube"
+            "rubic's cube",
+            "shelf"
         ]
+
+    # -----------------------------
+    # 语义类别定义（关键）
+    # -----------------------------
 
     prompt = f"""
         You are a robot task planner.
@@ -1071,11 +1081,7 @@ def generate_tasks_from_scene(
         Instruction:
         {instruction}
 
-        Pick candidates:
-        {pick_candidates}
-
-        Place candidates:
-        {place_candidates}
+        Object semantic categories:
 
         Goal:
         Generate a sequence of pick-and-place tasks needed to satisfy the instruction.
@@ -1084,9 +1090,8 @@ def generate_tasks_from_scene(
 
         1. Only select objects that are visible in the image.
         2. Ignore objects that are already inside the correct container.
-        3. Never pick objects already placed correctly.
-        4. If the scene already satisfies the instruction, return an empty list [].
-        5. Each task must contain exactly one pick and one place.
+        3. If the scene already satisfies the instruction, return an empty list [].
+        4. Each task must contain exactly one pick and one place.
 
         Return JSON ONLY.
 
@@ -1158,6 +1163,165 @@ def generate_tasks_from_scene(
     return tasks
 
 
+# 带错误原因的生成多组 pnp 目标名字
+def generate_tasks_from_scene_with_failure_reason(
+    image_rgb,
+    instruction,
+    failure_reason=None,
+    pick_candidates=None,
+    place_candidates=None
+):
+    """
+    Generate a list of pick-place tasks from image + instruction.
+
+    Returns:
+        [
+            {"pick": "...", "place": "..."},
+            {"pick": "...", "place": "..."}
+        ]
+        or []
+    """
+
+    client = get_vlm_client()
+
+    img_path = save_image_tmp(image_rgb)
+
+    # 默认候选
+    if pick_candidates is None:
+        pick_candidates = [
+            "baseball",
+            "tennis ball",
+            "cup",
+            "carrot",
+            "tiddy bear",
+            "toy horse",
+            "brush",
+            "rubic's cube",
+            "red pen",
+            "glue stick",
+        ]
+
+    if place_candidates is None:
+        place_candidates = [
+            "pink plate",
+            "white plate",
+            "blue plate",
+            "basket",
+            "rubic's cube",
+            "shelf"
+        ]
+
+    # -----------------------------
+    # 语义类别定义（关键）
+    # -----------------------------
+
+    prompt = f"""
+        You are a robot task planner.
+
+        You are given:
+        1. A tabletop RGB image
+        2. A human instruction
+
+        Instruction:
+        {instruction}
+
+        Reason the instruction is not satisfied:
+        {failure_reason}
+
+        Goal:
+        Generate pick-and-place tasks to fix the problem described in the reason.
+        
+        Planning procedure:
+
+        Step1:
+        Understand the instruction.
+
+        Step2:
+        Analyze the scene.
+
+        Step3:
+        Use the failure reason to identify which objects still need to be moved.
+
+        Step4:
+        Generate pick-and-place tasks that will satisfy the instruction.
+
+        Rules:
+
+        1. Only select objects visible in the image.
+        2. Ignore objects already placed correctly.
+        3. Each task must contain exactly one pick and one place.
+        4. Do not generate unnecessary tasks.
+        5. If the instruction is already satisfied, return [].
+
+        Return JSON ONLY.
+
+        Format:
+
+        [
+            {{
+                "pick": "object_name",
+                "place": "target_name"
+            }},
+            ...
+        ]
+
+        Example:
+
+        [
+            {{
+                "pick": "baseball",
+                "place": "basket"
+            }},
+            {{
+                "pick": "tennis ball",
+                "place": "basket"
+            }}
+        ]
+
+        If the instruction is already satisfied, output:
+
+        [
+            {{
+                "pick": "",
+                "place": ""
+            }}
+        ]
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    # 提取 JSON
+    data = extract_first_json(content)
+
+    # -----------------------------
+    # 结构清洗
+    # -----------------------------
+
+    tasks = _normalize_task_list(data)
+
+    if not tasks:
+        print("⚠️ No task detected")
+
+    return tasks
+
 # =========================================================
 # Check Instruction Completion
 # =========================================================
@@ -1182,11 +1346,19 @@ def check_instruction_complete(image_rgb, instruction):
         Instruction:
         {instruction}
 
+        Rules:
+
+        1. The reason must be ONE short sentence.
+        2. Mention all the objects that are not placed correctly.
+        3. Mention the target container.
+        4. If the instruction is satisfied, say:"all required objects are already in the correct place".
+
         Return JSON only.
 
+        Format:
         {{
         "completed": true or false,
-        "reason": "short explanation"
+        "reason": "one  sentence explaining why the instruction is not satisfied"
         }}
     """
 

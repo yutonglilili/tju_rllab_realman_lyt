@@ -1,6 +1,6 @@
 """
 使用 gradio 构建的 PnP 任务演示界面
-调用 clear_the_table 中的任务执行函数，实现 PnP 任务演示
+调用 pick_and_place 中的任务执行函数，实现 PnP 任务演示
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from realman.realman_env import RealmanEnv, T_from_realman_xyzrpy
 from realman.open3d_realsense_env import Open3dRealsenseEnv
 
 # 你的主系统
-from clear_the_table import (
+from pick_and_place import (
     SharedState,
     perception_thread,
     planning_thread,
@@ -410,14 +410,14 @@ def build_ui(controller):
     with gr.Blocks(title="Robot Pick and Place Demo") as demo:
 
         gr.Markdown(
-            "# 🤖 机械臂抓取放置任务演示"
+            "# 🤖 机械臂桌面操控演示界面"
         )
 
         with gr.Row():
 
             instruction = gr.Textbox(
                 label="Instruction",
-                value="Pick the baseball and place on white plate."
+                value="把垒球放到盘子里。"
             )
 
         with gr.Row():
@@ -485,7 +485,7 @@ def main():
     try:
         demo.queue(api_open=False).launch(
             server_name="0.0.0.0",
-            server_port=7860,
+            server_port=7880,
             share=True,
             show_api=False
         )

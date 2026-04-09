@@ -860,6 +860,9 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
 
     content = response.choices[0].message.content.strip()
 
+    # ("[VLM place check raw output]")
+    # print(content)
+
     # =========================
     # 提取JSON
     # =========================
@@ -934,8 +937,7 @@ def generate_task_from_scene(
             "white plate",
             "blue plate",
             "basket",
-            "rubic's cube",
-            "brown shelf"
+            "rubic's cube"
         ]
 
     prompt = f"""
@@ -947,12 +949,6 @@ def generate_task_from_scene(
 
         Instruction:
         {instruction}
-
-        Pick candidates:
-        {pick_candidates}
-
-        Place candidates:
-        {place_candidates}
 
         Goal:
         According to the requirements described in the directive, find a object that should be picked and a container that should be placed into, and return the name of the object and the name of the container.
@@ -1062,8 +1058,7 @@ def generate_tasks_from_scene(
             "white plate",
             "blue plate",
             "basket",
-            "rubic's cube",
-            "shelf"
+            "rubic's cube"
         ]
 
     prompt = f"""
@@ -1075,6 +1070,12 @@ def generate_tasks_from_scene(
 
         Instruction:
         {instruction}
+
+        Pick candidates:
+        {pick_candidates}
+
+        Place candidates:
+        {place_candidates}
 
         Goal:
         Generate a sequence of pick-and-place tasks needed to satisfy the instruction.

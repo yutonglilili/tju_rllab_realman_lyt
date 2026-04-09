@@ -417,7 +417,7 @@ def build_ui(controller):
 
             instruction = gr.Textbox(
                 label="Instruction",
-                value="Pick the baseball and place on plate."
+                value="Pick the baseball and place on white plate."
             )
 
         with gr.Row():
