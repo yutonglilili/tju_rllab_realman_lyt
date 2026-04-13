@@ -28,7 +28,7 @@ SYNC_MOVEJ_SPEED_PERCENT = 75
 SYNC_MOVEP_SPEED_PERCENT = 75
 SYNC_MOVEL_SPEED_PERCENT = 75
 GRIPPER_SPEED = 30
-GRIPPER_TOLERANCE = 0.005
+GRIPPER_TOLERANCE = 0.001
 GRIPPER_TIMEOUT_S = 2.0
 
 # =========================
@@ -76,6 +76,8 @@ T_TCP2REALMANEEF = transform_from(
     ]),
     np.array([0, 0, 0.22])  
 )
+
+T_TCP2REALMANEEF_INV = np.linalg.inv(T_TCP2REALMANEEF)  # 预缓存逆矩阵
 
 # 将末端执行器 EEF xyzrpy 转换为夹爪中心 TCP xyzrpy
 def pose_eef2tcp(pose_eef: np.ndarray) -> np.ndarray:
@@ -291,7 +293,7 @@ class RealmanDriver:
                         "pose": np.array(state["pose"]),
                         "joint": np.radians(state["joint"]),
                     }
-                time.sleep(0.02)
+                time.sleep(0.05)
             print("================================================")
             print(f"通信挂了，读了{i+1}次读不出来。")
             print("================================================")
@@ -539,45 +541,17 @@ class SyncController:
 
     def slow_stop(self) -> int:
         """轨迹缓停（与 RealmanDriver.slow_stop 一致）。"""
-        with self._op_lock:
-            return self.driver.slow_stop()
+        return self.driver.slow_stop()
 
     def emergency_stop(self) -> int:
         """轨迹急停（与 RealmanDriver.emergency_stop 一致）。"""
-        with self._op_lock:
-            return self.driver.emergency_stop()
+        return self.driver.emergency_stop()
 
 
 # =========================
 # Async Controller（流式控制）
 # =========================
-
 class AsyncController:
-    """
-    异步控制器(Streaming Controller)
-
-    设计目标:
-    - 支持高频控制(50Hz+)
-    - 支持轨迹跟踪(curobo / policy rollout)
-    - 控制与状态解耦
-
-    核心思想:
-    - 用户线程:只“发送目标”
-    - 控制线程:持续执行命令
-    - 状态线程:持续更新状态
-
-    本质是一个:
-    Producer-Consumer + State Cache 系统(生产者-消费者模式 + 状态缓存系统)
-
-    特点:
-    - 非阻塞(non-blocking)
-    - 高吞吐(high frequency)
-    - 实时性好(但不是严格同步)
-
-    风险:
-    - 命令会被覆盖(只执行最新)
-    - 状态有延迟(cache)
-    """
 
     def __init__(self, driver: RealmanDriver, min_interval=0.02):
         """
@@ -593,95 +567,143 @@ class AsyncController:
         self.driver = driver
         self.min_interval = min_interval
 
-        # 命令缓存(只保留最新)
-        self._lock = threading.Lock()
-        self._pending_joint = None
-        self._pending_pose = None
-        self._pending_gripper = None
+        # 线程控制
+        self._stop_event = threading.Event()
 
         # 状态缓存
-        self._state = None
+        self._state_lock = threading.Lock()
+        self._latest_state: Optional[RobotState] = None
+        self._cached_gripper_for_state = 1.0  # 夹爪缓存 (0=全闭, 1=全开) TODO:这里要检查
 
-        # 线程控制
-        self._stop = False
+        # 命令缓存
+        self._cmd_lock = threading.Lock()
+        self._pending_pose: Optional[np.ndarray] = None
+        self._pending_joint: Optional[np.ndarray] = None
+        self._pending_gripper: Optional[float] = None
+        self._last_cmd_time: float = 0
 
+        # 统计
+        self._stats_lock = threading.Lock()
+        self._cmd_count = 0
+        self._cmd_latency_sum = 0.0
+        self._state_count = 0
+        self._last_stats_time = time.time()
+        self._state_rate = 0.0
+        self._avg_latency = 0.0
+        
         # 启动后台线程(控制线程和状态线程)
         self._cmd_thread = threading.Thread(target=self._cmd_loop, daemon=True)
         self._state_thread = threading.Thread(target=self._state_loop, daemon=True)
-
         self._cmd_thread.start()
         self._state_thread.start()
 
+        # 等待首次状态
+        for _ in range(50):
+            if self._latest_state is not None:
+                break
+            time.sleep(0.02)
+
+    def _update_stats(self):
+        """更新统计信息"""
+        now = time.time()
+        with self._stats_lock:
+            dt = now - self._last_stats_time
+            if dt >= 1.0:
+                self._state_rate = self._state_count / dt
+                if self._cmd_count > 0:
+                    self._avg_latency = (self._cmd_latency_sum / self._cmd_count) * 1000
+                self._state_count = 0
+                self._cmd_count = 0
+                self._cmd_latency_sum = 0
+                self._last_stats_time = now
+
     # -------- 状态线程 --------
     def _state_loop(self):
-        """
-        持续读取机器人状态(约50Hz)
+        """状态读取线程"""
+        # 缓存的夹爪值 (从命令中更新)
+        self._cached_gripper_for_state = 1.0
 
-        作用:
-        - 更新缓存状态
-        - 避免主线程频繁访问 SDK
+        while not self._stop_event.is_set():
+            try:
+                state = self.driver.get_state()
 
-        注意:
-        - 状态是"近实时",不是严格同步
-        """
-        while not self._stop:
-            s = self.driver.get_state()
-            if s is not None:
-                self._state = RobotState(
-                    pose=s["pose"],
-                    joint=s["joint"],
-                    gripper=self.driver.get_gripper(),
-                    timestamp=time.time(),
-                )
-            time.sleep(0.02)
+                if state is not None:
+                    robot_state = RobotState(
+                        pose=pose_eef2tcp(state["pose"]),
+                        joint=state["joint"],
+                        gripper=self._cached_gripper_for_state,
+                        timestamp=time.time(),
+                    )
+                    with self._state_lock:
+                        self._latest_state = robot_state
+                    with self._stats_lock:
+                        self._state_count += 1
+                else:
+                    # 通信失败时增加延迟
+                    time.sleep(0.05)
+                    continue
+                
+                # 状态读取频率 (低于命令频率, 避免与 _cmd_loop 抢 SDK 带宽)
+                time.sleep(0.04)  # 25 Hz
+                
+            except:
+                # 通信失败时增加延迟
+                time.sleep(0.1)
 
     # -------- 控制线程 --------
     def _cmd_loop(self):
-        """
-        持续发送控制命令
+        """命令发送线程"""
+        while not self._stop_event.is_set():
+            try:
+                with self._cmd_lock:
+                    pose_tcp = self._pending_pose
+                    joint = self._pending_joint
+                    gripper = self._pending_gripper
+                    self._pending_pose = None
+                    self._pending_joint = None
+                    self._pending_gripper = None
+                
+                if pose_tcp is None and joint is None and gripper is None:
+                    time.sleep(0.005)
+                    continue
 
-        流程:
-        1. 读取 pending 命令
-        2. 清空缓存(避免重复执行)
-        3. 控制发送频率
-        4. 执行命令
+                # 最小发送间隔
+                now = time.time()
+                elapsed = now - self._last_cmd_time
+                if elapsed < self.min_interval:
+                    time.sleep(self.min_interval - elapsed)
+                    
+                start = time.time()
 
-        关键设计:
-        - "只执行最新命令"(覆盖机制)
-        - 防止命令堆积(低延迟)
-        """
-        last = 0
-        
-        while not self._stop:
-            with self._lock:
-                j = self._pending_joint
-                p = self._pending_pose
-                g = self._pending_gripper
+                if joint is not None:
+                    ret = self.driver.movej_follow(joint)
+                    if ret != 0 and self._cmd_count % 50 == 0:
+                        print(f"[AsyncController] movej_follow 失败: ret={ret}")
+                
+                elif pose_tcp is not None:
+                    pose_eef = pose_tcp2eef(pose_tcp)
+                    ret = self.driver.movep_follow(pose_eef)
+                    if ret != 0 and self._cmd_count % 50 == 0:
+                        print(f"[AsyncController] movep_follow 失败: ret={ret}")
+                
+                if gripper is not None:
+                    ret = self.driver.set_gripper(gripper, wait=False)
+                    if ret != 0 and self._cmd_count % 50 == 0:
+                        print(f"[AsyncController] set_gripper 失败: ret={ret}")
+                    self._cached_gripper_for_state = gripper
 
-                self._pending_joint = None
-                self._pending_pose = None
-                self._pending_gripper = None
+                latency = time.time() - start
+                self._last_cmd_time = time.time()
+                
+                with self._stats_lock:
+                    self._cmd_count += 1
+                    self._cmd_latency_sum += latency
+                    
+            except Exception as e:
+                time.sleep(0.01)
 
-            if j is None and p is None and g is None:
-                time.sleep(0.005)
-                continue
-
-            # 频率控制
-            now = time.time()
-            if now - last < self.min_interval:
-                time.sleep(self.min_interval - (now - last))
-
-            if j is not None:
-                self.driver.movej_follow(j)
-            elif p is not None:
-                self.driver.movep_follow(p)
-
-            # 夹爪并行
-            if g is not None:
-                self.driver.set_gripper(g, wait=False)
-
-            last = time.time()  
-
+     # -------- 用户接口 --------
+    
     # -------- 用户接口 --------
     def send_joint(self, joint):
         """
@@ -694,22 +716,25 @@ class AsyncController:
         用于:
         - 轨迹跟踪
         """
-        with self._lock:
+        with self._cmd_lock:
             self._pending_joint = joint.copy()
 
-    def send_pose(self, pose):
-        """发送位姿目标（非阻塞）"""
-        with self._lock:
-            self._pending_pose = pose.copy()
+    def send_pose(self, pose_tcp):
+        """
+        发送位姿目标（非阻塞）
+        接收的是夹爪中心 TCP 位姿的 xyzrpy 6维, 转为末端执行器 EEF 位姿的 xyzrpy 6维
+        """
+        with self._cmd_lock:
+            self._pending_pose = pose_tcp.copy()
 
-    def send_gripper(self, g):
+    def send_gripper(self, gripper):
         """发送夹爪命令（非阻塞）"""
-        with self._lock:
-            self._pending_gripper = g
+        with self._cmd_lock:
+            self._pending_gripper = gripper
 
     def slow_stop(self) -> int:
         """轨迹缓停；清空待发送指令，避免停止后控制线程继续下发。"""
-        with self._lock:
+        with self._cmd_lock:
             self._pending_joint = None
             self._pending_pose = None
             self._pending_gripper = None
@@ -717,7 +742,7 @@ class AsyncController:
 
     def emergency_stop(self) -> int:
         """轨迹急停；清空待发送指令。"""
-        with self._lock:
+        with self._cmd_lock:
             self._pending_joint = None
             self._pending_pose = None
             self._pending_gripper = None
@@ -733,7 +758,8 @@ class AsyncController:
         注意:
         - 可能是旧数据(延迟 ~20ms)
         """
-        return self._state
+        self._update_stats()
+        return self._latest_state
 
     def stop(self):
         """
@@ -742,7 +768,7 @@ class AsyncController:
         注意:
         - 必须在程序退出时调用
         """
-        self._stop = True
+        self._stop_event.set()
 
 
 # =========================
@@ -813,6 +839,15 @@ class RealmanEnv:
     def emergency_stop(self) -> int:
         """轨迹急停（sync / async 均可用）。"""
         return self.ctrl.emergency_stop()
+
+    def get_communication_stats(self) -> Dict[str, Any]:
+        """获取通信统计"""
+        with self.ctrl._stats_lock:
+            return {
+                "async_mode": self.mode == "async",
+                "state_update_rate": self.ctrl._state_rate,
+                "avg_latency_ms": self.ctrl._avg_latency,
+            }
 
     # -------- 状态 --------
     def get_state(self):
