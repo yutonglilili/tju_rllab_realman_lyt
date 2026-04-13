@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+
+# data
+camera/
+*.jpg
+*.png
+
+# logs
+*.log
+
+# env
+.env
+.codex
+.cursor
+.vscode
