@@ -1,5 +1,10 @@
 """
-此版本支持连续 pnp 任务，并在每个任务中使用感知，规划，执行三线程协同工作，实现物体跟踪，错误检测，重规划等功能。
+修改为使用带方位描述的 pick 和 place 目标指令调用模型打点，并在感知线程中改为对目标的移动的感知，而不再是对物体的感知。
+认为目标发生移动的判定：
+1. 时间差分：使用多帧计算平均值，如果平均值大于阈值，则认为目标发生移动；
+2. 连续触发：连续触发多次移动检测，如果次数大于阈值，则认为目标发生移动；
+3. 阈值设置：在 pick 阶段和 place 阶段，分别设置不同的移动阈值；
+4. 阶段限制：只在 approach 阶段做移动感知，其他阶段不进行移动感知；
 """
 import copy
 import json
@@ -26,12 +31,15 @@ from pick_and_place_utils import (
     crop_image_around_point,
 )
 from multi_pointing_vllm_get_point_utils import (
+    generate_tasks_from_scene_with_failure_reason,
     get_point_vllm,
     check_grasp_success_vllm,
     check_place_success_vllm,
     generate_task_from_scene,
     check_instruction_complete,
     generate_tasks_from_scene,
+    generate_tasks_from_scene_with_failure_reason,
+    generate_tasks_with_descriptions,
 )
 
 
@@ -40,11 +48,14 @@ from multi_pointing_vllm_get_point_utils import (
 # ═══════════════════════════════════════════════════
 
 # 感知参数
-PERCEPTION_INTERVAL = 0.5       # 打点频率（秒），取决于 VLM 推理速度
-TASK_DISCOVERY_INTERVAL = 2.0  # 没任务时监视频率
-PLACE_Z_OFFSET = 0.08           # place 阶段 z 轴高度偏移（米）
+PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
+TASK_DISCOVERY_INTERVAL = 2.0   # 没任务时监视频率
+
+PICK_Z_OFFSET = 0.005            # pick 阶段 z 轴高度偏移（米）
+PLACE_Z_OFFSET = 0.09           # place 阶段 z 轴高度偏移（米）
+
 MOVE_OBJECT_THRESHOLD = 0.05    # 物体移动检测阈值（米，5cm）
-MOVE_CONTAINER_THRESHOLD = 0.20 # 容器移动检测阈值（米，10cm）
+MOVE_CONTAINER_THRESHOLD = 0.20 # 容器移动检测阈值（米，20cm）
 
 # 规划参数
 SAFE_HEIGHT = 0.06              # 安全高度（米）
@@ -52,8 +63,10 @@ TRAJECTORY_DOWNSAMPLE = 2       # 轨迹下采样率
 
 # 执行参数
 CONTROL_INTERVAL = 0.0          # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
+
 GRIPPER_OPEN = 0.09             # 夹爪全开
 GRIPPER_CLOSE = 0.03            # 夹爪全闭
+
 # 连续运动失败（SyncController 抛 RuntimeError）达到此次数则放弃本段轨迹，触发 need_replan 重新规划
 MAX_CONSECUTIVE_MOTION_FAILURES = 5
 
@@ -65,6 +78,7 @@ MAX_PLACE_RETRIES = 5           # place 最大重试次数
 CHECK_PICK_SUCCESS_MODE = 1
 CHECK_PLACE_SUCCESS_MODE = 1
 
+# 检测裁剪区域大小
 CHECK_PICK_CROP_SIZE = 560
 CHECK_PLACE_CROP_SIZE = 640
 
@@ -114,7 +128,13 @@ class SharedState:
         self.task_phase = TaskPhase.IDLE
 
         # ===== 感知输出 =====
-        self.target_name = None                     # 当前追踪的目标名称
+        # ===== 移动检测增强 =====
+        self.point_buffer = []              # 最近N帧点
+        self.smoothed_point = None          # 当前平滑点
+        self.last_smoothed_point = None     # 上一稳定点
+        self.move_trigger_count = 0         # 连续触发计数
+
+        self.target_description = None              # 当前追踪的目标描述
         self.latest_point_2d = None                 # 最新 2D 打点结果 (x, y)
         self.latest_point_3d = None                 # 最新 3D 坐标 (base 坐标系)
         self.latest_target_T = None                 # 最新目标物体的 4x4 位姿矩阵（此处为 TCP2BASE）
@@ -147,7 +167,7 @@ class SharedState:
             self.current_task = None
             self.task_phase = TaskPhase.IDLE
 
-            self.target_name = None
+            self.target_description = None
             self.latest_point_2d = None
             self.latest_point_3d = None
             self.latest_target_T = None
@@ -156,6 +176,11 @@ class SharedState:
             self.is_first_point = True
             self.tracking_mode = False
             self.verify_mode = False
+
+            self.point_buffer = []
+            self.smoothed_point = None
+            self.last_smoothed_point = None
+            self.move_trigger_count = 0
 
             self.action_list = []
             self.action_index = 0
@@ -176,7 +201,7 @@ class SharedState:
 def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
     """
     感知线程, 分为两种模式
-    1. 追踪模式: 持续以固定频率调用 VLM 打点，检测物体位置变化。
+    1. 追踪模式: 持续以固定频率调用 VLM 打点，检测目标变化。
     2. 验证模式: 调用 VLM 验证抓取/放置是否成功。
 
     Args:
@@ -198,9 +223,9 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
             # 获取当前追踪目标
             with state.lock:
-                target_name = state.target_name
+                target_description = state.target_description
                 task_phase = state.task_phase
-                if target_name is None:
+                if target_description is None:
                     continue
 
             try:
@@ -215,7 +240,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                         continue
 
                 # 调用 VLM 打点
-                point_2d = get_point_vllm(image_rgb, f"Point the {target_name}", save_path=None)
+                point_2d = get_point_vllm(image_rgb, f"Point the {target_description}", save_path=None)
 
                 # 保存打点图片
                 # save_check_image(image_rgb, point_2d, SAVE_DIR)
@@ -223,6 +248,10 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
                 # 2D → 3D 转换
                 target_T = make_target_T(obs, int(point_2d[0]), int(point_2d[1]), rs_env, cam_results, home_T_tcp2base)
+
+                # 对 pick 阶段修正 z 轴高度
+                if task_phase == TaskPhase.PICK:
+                    target_T = make_lift_T(target_T, lift_z=PICK_Z_OFFSET)
 
                 # 对 place 阶段修正 z 轴高度
                 if task_phase == TaskPhase.PLACE:
@@ -242,31 +271,23 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     if state.is_first_point:
                         # 第一个有效点
                         state.last_stable_point_3d = target_xyz.copy()
+                        state.last_smoothed_point = target_xyz.copy()
                         state.is_first_point = False
                         state.point_changed = True
                         state.need_replan.set()
-                        print(f"[感知] 📍 首次定位 {target_name}: xyz={np.round(target_xyz, 4)}")
+                        print(f"[感知] 📍 首次定位 {target_description}: xyz={np.round(target_xyz, 4)}")
 
                     else:
-                        dist = np.linalg.norm(target_xyz - state.last_stable_point_3d)
+                        moved, dist = detect_target_movement(state, target_xyz, task_phase)
 
-                        # 根据当前阶段选择移动阈值
-                        if state.task_phase == TaskPhase.PICK:
-                            threshold = MOVE_OBJECT_THRESHOLD
-                        elif state.task_phase == TaskPhase.PLACE:
-                            threshold = MOVE_CONTAINER_THRESHOLD
-                        else:
-                            continue
-
-                        if dist > threshold:
-                            # 目标移动了！
-                            state.last_stable_point_3d = target_xyz.copy()
+                        if moved:
+                            # 目标移动了
                             state.point_changed = True
                             state.abort_execution.set() # 中止当前执行
                             state.need_replan.set()     # 触发重规划
 
                             label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
-                            print(f"[感知] ⚠️ {label} {target_name} 移动！距离: {dist:.4f}m (阈值={threshold}m) → 重规划")
+                            print(f"[感知] ⚠️ {label} {target_description} 移动！距离: {dist:.4f}m → 重规划")
                         else:
                             state.point_changed = False # 目标没有移动
 
@@ -279,7 +300,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
             with state.lock:
                 current_task = state.current_task
                 task_phase = state.task_phase
-                target_name = state.target_name
+                target_description = state.target_description
                 check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
                 attemp_count = state.attemp_count
 
@@ -295,7 +316,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     with state.lock:
                         state.current_task = current_task
                         state.task_phase = TaskPhase.PLACE
-                        state.target_name = current_task['place']
+                        state.target_description = current_task['place']
                         state.tracking_mode = True
                         state.verify_mode = False
                 
@@ -341,7 +362,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     else:
                         # 回到感知模式，重新打点
                         with state.lock:
-                            state.target_name = current_task['pick']
+                            state.target_description = current_task['pick']
                             state.task_phase = TaskPhase.PICK
                             state.latest_point_2d = None
                             state.latest_point_3d = None
@@ -355,6 +376,60 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
             
 
     print("[感知线程] 已停止")
+
+# 移动检测
+def detect_target_movement(state, current_xyz, task_phase):
+    """
+    多策略融合目标移动检测：
+    1. 时间平滑
+    2. 差分检测
+    3. 连续触发
+
+    Returns:
+        moved (bool), dist (float)
+    """
+
+    # ===== 参数 =====
+    BUFFER_SIZE = 5
+    TRIGGER_COUNT_THRESHOLD = 2   # 连续触发2次才认为移动
+
+    if task_phase == TaskPhase.PICK:
+        DIST_THRESHOLD = MOVE_OBJECT_THRESHOLD
+    else:
+        DIST_THRESHOLD = MOVE_CONTAINER_THRESHOLD
+
+    # ===== 1. 更新 buffer =====
+    state.point_buffer.append(current_xyz.copy())
+    if len(state.point_buffer) > BUFFER_SIZE:
+        state.point_buffer.pop(0)
+
+    # ===== 2. 平滑 =====
+    smoothed = np.mean(state.point_buffer, axis=0)
+
+    # ===== 3. 初始化 =====
+    if state.smoothed_point is None:
+        state.smoothed_point = smoothed
+        state.last_smoothed_point = smoothed
+        return True, 0.0   # 第一次一定触发
+
+    # ===== 4. 差分 =====
+    dist = np.linalg.norm(smoothed - state.last_smoothed_point)
+
+    # ===== 5. 判定逻辑 =====
+    if dist > DIST_THRESHOLD:
+        state.move_trigger_count += 1
+    else:
+        state.move_trigger_count = 0
+
+    # ===== 6. 连续触发确认 =====
+    if state.move_trigger_count >= TRIGGER_COUNT_THRESHOLD:
+        state.last_smoothed_point = smoothed.copy()
+        state.last_stable_point_3d = smoothed.copy()
+        state.move_trigger_count = 0
+        return True, dist
+    else:
+        return False, dist
+
 
 
 # 结果检测
@@ -430,7 +505,7 @@ def do_check_pick_success(env, rs_env, pick_name, point_2d=None,cam_results=None
             elif key == 'n':
                 return False
 
-
+# TODO: 修改为使用带方位描述的 place 目标指令调用模型打点，并在感知线程中改为对目标的移动的感知，而不再是对物体的感知。
 def do_check_place_success(rs_env, pick_name, place_name, point_2d=None,cam_results=None, home_T_tcp2base=None):
     """调用 VLM 检测 place 是否成功"""
 
@@ -594,9 +669,11 @@ def build_action_list(env, target_T, home_T_tcp2base, curobo_planner, task_phase
         post_target_pose = realman_xyzrpy_from_T(post_target_T)
 
     # post 不传 gripper 状态
-    action_list = [{"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0},
-                   {"pose": target_pose, "gripper": target_gripper_state, "tag": 1},
-                   {"pose": post_target_pose, "tag": 2}]
+    action_list = [
+        {"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0, "motion": "pose", "wait_gripper": True},
+        {"pose": target_pose, "gripper": target_gripper_state, "tag": 1, "motion": "pose", "wait_gripper": True},
+        {"pose": post_target_pose, "tag": 2, "motion": "pose"},
+    ]
 
     return action_list
             
@@ -699,8 +776,22 @@ def execution_thread(state, env):
             elif "pose" in action:
                 step_action["pose"] = action["pose"]
 
+            if "motion" in action:
+                step_action["motion"] = action["motion"]
+
             if "gripper" in action:
                 step_action["gripper"] = action["gripper"]
+
+            if "wait_gripper" in action:
+                step_action["wait_gripper"] = action["wait_gripper"]
+
+            if state.abort_execution.is_set():
+                print("[执行] ⏹️ 下发动作前检测到中止信号，停止旧动作序列")
+                with state.lock:
+                    state.action_list = []
+                    state.action_index = 0
+                state.plan_ready.clear()
+                break
 
             # post阶段感知线程空转，避免影响执行
             if action["tag"] == 2:
@@ -728,6 +819,14 @@ def execution_thread(state, env):
                     break
                 continue
 
+            if state.abort_execution.is_set():
+                print("[执行] ⏹️ 动作执行完成后检测到重规划请求，停止后续动作")
+                with state.lock:
+                    state.action_list = []
+                    state.action_index = 0
+                state.plan_ready.clear()
+                break
+
             motion_fail_streak = 0
             with state.lock:
                 state.action_index += 1
@@ -749,7 +848,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
         state.current_task = task
         state.task_phase = TaskPhase.PICK
         state.tracking_mode = True
-        state.target_name = task['pick']
+        state.target_description = task['pick']
 
     while not state.stop_all.is_set():
         if state.task_done.wait(timeout=0.1):
@@ -765,7 +864,7 @@ def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
     else:
         return False
 
-# 按照动作列表执行所有任务
+# 按照明确的动作列表执行所有任务
 def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
     if not task_list:
         print("[主线程] 未生成有效任务列表，等待下一轮检测...")
@@ -798,7 +897,7 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
                 state.task_phase = TaskPhase.PICK
                 state.tracking_mode = True
                 state.verify_mode = False
-                state.target_name = next_task['pick']
+                state.target_description = next_task['pick']
                 state.is_first_point = True
                 state.last_stable_point_3d = None
 
@@ -851,8 +950,8 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
             if state.stop_all.is_set():
                 break
 
-# 按照模糊指令持续完成任务（一次生成多组pnp目标）
-def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+# 按照模糊指令持续完成任务（一次生成多组pnp目标），完成列表后持续监控
+def run_all_tasks_by_instruction_with_list_and_monitor(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
     """
     根据自然语言指令持续执行任务：
     1. 调用 VLM 判断当前场景是否满足指令的要求，如果满足则定频检测，不满足则生成 pnp list。
@@ -901,7 +1000,98 @@ def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, inst
                 break
             continue
 
-            
+# 按照模糊指令持续完成任务（一次生成多组pnp目标），完成列表后如果认为满足指令则停止
+def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+    """
+    根据自然语言指令持续执行任务：
+    1. 调用 VLM 判断当前场景是否满足指令的要求，如果满足则定频检测，不满足则生成 pnp list。
+    2. 按照list依次执行pnp任务，并在完成一组pnp任务后更新list（将已完成的pnp任务从list中移除，调整新放的和拿走的物体）
+    """
+
+    print(f"[主线程] 🧠 指令: {instruction}")
+
+    tasks_list = None
+
+    while not state.stop_all.is_set():
+
+        # 获取当前图像
+        obs = rs_env.step()
+        image_rgb = obs["rgb"]
+
+        try:
+            # 判断当前场景是否满足顶层指令的要求
+            is_complete, reason = check_instruction_complete(image_rgb, instruction)
+            print(f"is_complete: {is_complete}, reason: {reason}")
+
+            if is_complete:
+                print("[主线程] 当前场景满足指令的要求，停止执行")
+                break
+            else:
+                tasks_list = generate_tasks_from_scene(image_rgb, instruction)
+                print(f"tasks_list: {tasks_list}")
+
+                if not tasks_list:
+                    print("[主线程] 未生成有效任务，等待下一轮检测...")
+                    time.sleep(TASK_DISCOVERY_INTERVAL)
+                    continue
+
+                run_all_tasks(state, env, rs_env, cam_results, tasks_list, home_T_tcp2base)
+                if state.stop_all.is_set():
+                    break
+        
+        except Exception as e:
+            print(f"[主线程] 异常: {e}")
+            time.sleep(TASK_DISCOVERY_INTERVAL)
+            if state.stop_all.is_set():
+                break
+            continue
+
+def run_all_tasks_by_instruction_with_position_description(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+    """
+    1. 调用 vlm 根据长指令拆解出多个 pick 和 place 目标, 目标不只是 object name,还包含方位描述。
+    2. 按照目标依次执行pnp任务, 并在完成一组pnp任务后更新目标(将已完成的pnp任务从list中移除, 调整新放的和拿走的物体)
+    """
+    print(f"[主线程] 🧠 指令: {instruction}")
+
+    tasks_list = None
+
+    while not state.stop_all.is_set():
+
+        # 获取当前图像
+        obs = rs_env.step()
+        image_rgb = obs["rgb"]
+
+        try:
+            # 判断当前场景是否满足顶层指令的要求
+            is_complete, reason = check_instruction_complete(image_rgb, instruction)
+            print(f"is_complete: {is_complete}, reason: {reason}")
+
+            if is_complete:
+                print("[主线程] 当前场景满足指令的要求，停止执行")
+                break
+            else:
+                tasks_list = generate_tasks_with_descriptions(image_rgb, instruction)
+                print(f"tasks_list: {tasks_list}")
+
+                if not tasks_list:
+                    print("[主线程] 未生成有效任务，等待下一轮检测...")
+                    time.sleep(TASK_DISCOVERY_INTERVAL)
+                    continue
+
+                run_all_tasks(state, env, rs_env, cam_results, tasks_list, home_T_tcp2base)
+                if state.stop_all.is_set():
+                    break
+        
+        except Exception as e:
+            print(f"[主线程] 异常: {e}")
+            time.sleep(TASK_DISCOVERY_INTERVAL)
+            if state.stop_all.is_set():
+                break
+            continue
+
+    
+    
+
 # ═══════════════════════════════════════════════════
 # 主程序入口
 # ═══════════════════════════════════════════════════
@@ -943,7 +1133,7 @@ def main():
     # ============================
 
     # instruction = "Clear the table. Pick all toys on the table and place them on the white plate."
-    instruction = "Pick the baseball and place it on the rubic's cube."
+    instruction = "Pick the baseball and place it on the right side of the rubic's cube."
 
     # ============================
     # 5. 初始化共享状态
@@ -985,7 +1175,7 @@ def main():
     # ============================
     print("\n[运行] 开始执行任务...\n")
     try:
-        run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, home_T_tcp2base)
+        run_all_tasks_by_instruction_with_position_description(state, env, rs_env, cam_results, instruction, home_T_tcp2base)
     except KeyboardInterrupt:
         print("\n[停止] 收到键盘中断，正在停止...")
     except Exception as e:

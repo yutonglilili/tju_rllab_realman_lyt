@@ -57,19 +57,142 @@ def save_image_tmp(image_rgb):
 
     return TMP_IMAGE_PATH
 
-def extract_first_json(text: str):
-    """Extract first JSON object from model output"""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
 
-    if match is None:
+def _parse_json_candidate(text: str):
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            return parser(text)
+        except Exception:
+            continue
+    return None
+
+
+def extract_first_json(text: str):
+    """Extract the first JSON-like object or array from model output."""
+    if not isinstance(text, str) or not text.strip():
         raise RuntimeError("No JSON found in model output")
 
-    json_str = match.group()
+    cleaned = re.sub(
+        r"```(?:json|python|text)?\s*(.*?)\s*```",
+        r"\1",
+        text.strip(),
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
 
-    try:
-        return json.loads(json_str)
-    except Exception:
-        return ast.literal_eval(json_str)
+    parsed = _parse_json_candidate(cleaned)
+    if parsed is not None:
+        return parsed
+
+    openers = {"{": "}", "[": "]"}
+    for start, char in enumerate(cleaned):
+        if char not in openers:
+            continue
+
+        closer = openers[char]
+        depth = 0
+        in_string = False
+        escape = False
+
+        for end in range(start, len(cleaned)):
+            current = cleaned[end]
+
+            if in_string:
+                if escape:
+                    escape = False
+                elif current == "\\":
+                    escape = True
+                elif current == '"':
+                    in_string = False
+                continue
+
+            if current == '"':
+                in_string = True
+                continue
+
+            if current == char:
+                depth += 1
+            elif current == closer:
+                depth -= 1
+
+                if depth == 0:
+                    candidate = cleaned[start:end + 1]
+                    parsed = _parse_json_candidate(candidate)
+                    if parsed is not None:
+                        return parsed
+                    break
+
+    raise RuntimeError(f"Failed to parse JSON from model output: {text[:200]!r}")
+
+
+def _unwrap_single_item(data):
+    while isinstance(data, list) and len(data) == 1 and isinstance(data[0], (dict, list)):
+        data = data[0]
+    return data
+
+
+def _normalize_task_entry(item):
+    if not isinstance(item, dict):
+        return None
+
+    pick = item.get("pick")
+    place = item.get("place")
+
+    if pick is None or place is None:
+        return None
+
+    pick = str(pick).strip()
+    place = str(place).strip()
+
+    if not pick or not place:
+        return None
+
+    return {
+        "pick": pick,
+        "place": place,
+    }
+
+
+def _normalize_task_list(data):
+    data = _unwrap_single_item(data)
+
+    if isinstance(data, dict) and "tasks" in data:
+        data = data["tasks"]
+
+    if isinstance(data, dict):
+        task = _normalize_task_entry(data)
+        return [task] if task is not None else []
+
+    if not isinstance(data, list):
+        return []
+
+    tasks = []
+    for item in data:
+        item = _unwrap_single_item(item)
+
+        if isinstance(item, dict) and "tasks" in item:
+            tasks.extend(_normalize_task_list(item["tasks"]))
+            continue
+
+        task = _normalize_task_entry(item)
+        if task is not None:
+            tasks.append(task)
+
+    return tasks
+
+
+def _normalize_completion_result(data):
+    data = _unwrap_single_item(data)
+
+    if isinstance(data, dict):
+        return bool(data.get("completed", False)), str(data.get("reason", "")).strip()
+
+    if isinstance(data, list):
+        for item in data:
+            item = _unwrap_single_item(item)
+            if isinstance(item, dict) and ("completed" in item or "reason" in item):
+                return bool(item.get("completed", False)), str(item.get("reason", "")).strip()
+
+    raise RuntimeError(f"Unexpected completion result format: {data!r}")
 
 
 # =========================================================
@@ -343,16 +466,7 @@ def parse_multi_pick_place_tasks(text_prompt):
     import ast
 
     # ====== VLM call ======
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
-    from pointing_vllm_client import VLLMOnlineClient
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     prompt = f"""
         You are a robot task planner.
@@ -375,7 +489,7 @@ def parse_multi_pick_place_tasks(text_prompt):
     """
 
     response = client.client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=512,
         temperature=0.2,
@@ -486,11 +600,6 @@ def parse_multi_pick_place_tasks(text_prompt):
 # Get 2D Point
 # =========================================================
 def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path="debug_pointing_vllm.png", color=(0, 0, 255)):
-    # Model and server configuration
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
     # Sampling parameters
     greedy = False
     seed = 3407
@@ -506,11 +615,7 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
     video_do_sample_frames = True  # Enable frame sampling
 
     # Initialize client
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     height, width = image_rgb.shape[:2]
 
@@ -528,10 +633,11 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
             Output JSON only: [{{"point_2d":[x,y]}}]
             x,y must be in [0,1000]
 
-        If the target is a basket:
-            The point MUST be inside the basket
-            The point MUST NOT be on any object inside the basket
-            Prefer a position near the center of the basket
+        If the target is a container:
+            The point MUST be inside the container
+            The point MUST NOT be on any object inside the container
+            The point MUST NOT be on the eage of the container
+            Prefer a position near the center of the container
         If the target is a normal object:
             Choose a point near the top-center of the object
             Avoid edges of the object
@@ -581,15 +687,7 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
 # =========================================================
 def check_grasp_success_vllm(image_rgb, object_name):
 
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     # =========================
     # 图像处理（关键）
@@ -625,10 +723,8 @@ def check_grasp_success_vllm(image_rgb, object_name):
 
         SUCCESS conditions:
         - The object is clearly inside the robot gripper
-        - The object is lifted from the table
 
         FAILURE conditions:
-        - The object is still on the table
         - The gripper is empty
         - The object is not inside the gripper
 
@@ -652,7 +748,7 @@ def check_grasp_success_vllm(image_rgb, object_name):
     messages = client.prepare_messages_from_test_case(test_case)
 
     response = client.client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=messages,
         max_tokens=200,
         temperature=0.2,
@@ -693,17 +789,10 @@ def check_grasp_success_vllm(image_rgb, object_name):
 # =========================================================
 # Place Success Check
 # =========================================================
+
 def check_place_success_vllm(image_rgb, object_name, container_name):
 
-    base_url = "http://172.28.102.11:22002/v1"
-    api_key = "EMPTY"
-    model_name = "Embodied-R1.5-SFT-0128"
-
-    client = VLLMOnlineClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_name=model_name
-    )
+    client = get_vlm_client()
 
     # =========================
     # 图像处理
@@ -743,7 +832,6 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
 
         FAILURE conditions:
         - The object is outside the container.
-        - The object is still in the robot gripper.
 
         Return JSON only.
 
@@ -765,16 +853,13 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
     messages = client.prepare_messages_from_test_case(test_case)
 
     response = client.client.chat.completions.create(
-        model=model_name,
+        model=MODEL_NAME,
         messages=messages,
         max_tokens=200,
         temperature=0.2,
     )
 
     content = response.choices[0].message.content.strip()
-
-    # ("[VLM place check raw output]")
-    # print(content)
 
     # =========================
     # 提取JSON
@@ -806,7 +891,9 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
 # =========================================================
 # Generate Task Table
 # =========================================================
-def generate_task_table_from_scene(
+
+# 生成一组 pnp 目标的名字
+def generate_task_from_scene(
     image_rgb,
     instruction,
     pick_candidates=None,
@@ -815,20 +902,12 @@ def generate_task_table_from_scene(
     """
     Generate pick-place task table from image + instruction.
 
-    Args:
-        image_rgb: RGB numpy image
-        instruction: natural language instruction
-        pick_candidates: optional list of pickable objects
-        place_candidates: optional list of place targets
-
     Returns:
-        dict:
         {
-            "num_tasks": N,
-            "tasks":[
-                {"pick":"...", "place":"..."}
-            ]
+            "pick":"...", 
+            "place":"..."
         }
+        or None
     """
 
     client = get_vlm_client()
@@ -842,19 +921,22 @@ def generate_task_table_from_scene(
             "tennis ball",
             "cup",
             "carrot",
-            "apple",
-            "mouse",
             "tiddy bear",
             "toy horse",
-            "brush"
+            "brush",
+            "rubic's cube",
+            "red pen",
+            "glue stick",
         ]
 
     if place_candidates is None:
         place_candidates = [
             "pink plate",
             "white plate",
-            "blue bowl",
-            "basket"
+            "blue plate",
+            "basket",
+            "rubic's cube",
+            "brown shelf"
         ]
 
     prompt = f"""
@@ -864,37 +946,40 @@ def generate_task_table_from_scene(
         1. A tabletop RGB image
         2. A human instruction
 
-        Your job is to generate a sequence of pick-and-place tasks.
-
         Instruction:
         {instruction}
 
-        Pick candidates (preferred names):
+        Pick candidates:
         {pick_candidates}
 
-        Place candidates (preferred names):
+        Place candidates:
         {place_candidates}
 
+        Goal:
+        According to the requirements described in the directive, find a object that should be picked and a container that should be placed into, and return the name of the object and the name of the container.
+        
         Rules:
 
-        1. Identify objects mentioned in the instruction and visible in the image.
-        2. If an object matches a candidate name, use that name.
-        3. If the object is not in the candidate list, you may create a new object name.
-        4. Each task must contain ONE pick object and ONE place target.
-        5. Tasks must be executable sequentially by a robot.
+        1. Select an object that matches the type required by the instruction and is visible in the image.
+        2. Ignore any objects that are already inside the target container.
+        3. Never choose objects that are already in the container, even if they match the instruction.
+        4. If the current scene already satisfies the instruction (for example, all required objects are already inside the container or there are no valid objects to move), output empty values for both "pick" and "place".
+        5. Return the name of the object and the name of the container.
 
         Return JSON ONLY.
 
         Format:
 
         {{
-        "num_tasks": N,
-        "tasks":[
-            {{
-                "pick":"object_name",
-                "place":"target_name"
-            }}
-        ]
+            "pick":"object_name",
+            "place":"target_name"
+        }}
+
+        If the instruction is already satisfied, output:
+
+        {{
+            "pick": "",
+            "place": ""
         }}
     """
 
@@ -925,37 +1010,420 @@ def generate_task_table_from_scene(
     # 结构清洗
     # -----------------------------
 
-    tasks = data.get("tasks", [])
+    tasks = _normalize_task_list(data)
 
-    if isinstance(tasks, dict):
-        tasks = [tasks]
+    if not tasks:
+        print("⚠️ No task detected")
+        return None
 
-    cleaned_tasks = []
+    return tasks[0]
 
-    for t in tasks:
 
-        if not isinstance(t, dict):
-            continue
+# 生成多组 pnp 目标的名字
+def generate_tasks_from_scene(
+    image_rgb,
+    instruction,
+    history_tasks=None,
+    pick_candidates=None,
+    place_candidates=None
+):
+    """
+    Generate a list of pick-place tasks from image + instruction.
 
-        pick = t.get("pick", None)
-        place = t.get("place", None)
+    Returns:
+        [
+            {"pick": "...", "place": "..."},
+            {"pick": "...", "place": "..."}
+        ]
+        or []
+    """
 
-        if pick is None or place is None:
-            continue
+    client = get_vlm_client()
 
-        cleaned_tasks.append({
-            "pick": str(pick).strip(),
-            "place": str(place).strip()
-        })
+    img_path = save_image_tmp(image_rgb)
 
-    result = {
-        "num_tasks": len(cleaned_tasks),
-        "tasks": cleaned_tasks
+    # 默认候选
+    if pick_candidates is None:
+        pick_candidates = [
+            "baseball",
+            "tennis ball",
+            "cup",
+            "carrot",
+            "tiddy bear",
+            "toy horse",
+            "brush",
+            "rubic's cube",
+            "red pen",
+            "glue stick",
+        ]
+
+    if place_candidates is None:
+        place_candidates = [
+            "pink plate",
+            "white plate",
+            "blue plate",
+            "basket",
+            "rubic's cube",
+            "shelf"
+        ]
+
+    # -----------------------------
+    # 语义类别定义（关键）
+    # -----------------------------
+
+    prompt = f"""
+        You are a robot task planner.
+
+        You are given:
+        1. A tabletop RGB image
+        2. A human instruction
+
+        Instruction:
+        {instruction}
+
+        Object semantic categories:
+
+        Goal:
+        Generate a sequence of pick-and-place tasks needed to satisfy the instruction.
+
+        Rules:
+
+        1. Only select objects that are visible in the image.
+        2. Ignore objects that are already inside the correct container.
+        3. If the scene already satisfies the instruction, return an empty list [].
+        4. Each task must contain exactly one pick and one place.
+
+        Return JSON ONLY.
+
+        Format:
+
+        [
+            {{
+                "pick": "object_name",
+                "place": "target_name"
+            }},
+            ...
+        ]
+
+        Example:
+
+        [
+            {{
+                "pick": "baseball",
+                "place": "basket"
+            }},
+            {{
+                "pick": "tennis ball",
+                "place": "basket"
+            }}
+        ]
+
+        If the instruction is already satisfied, output:
+
+        [
+            {{
+                "pick": "",
+                "place": ""
+            }}
+        ]
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
     }
 
-    print("✅ Generated task table:", result)
+    messages = client.prepare_messages_from_test_case(test_case)
 
-    return result
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    # 提取 JSON
+    data = extract_first_json(content)
+
+    # -----------------------------
+    # 结构清洗
+    # -----------------------------
+
+    tasks = _normalize_task_list(data)
+
+    if not tasks:
+        print("⚠️ No task detected")
+
+    return tasks
+
+
+# 带错误原因的生成多组 pnp 目标名字
+def generate_tasks_from_scene_with_failure_reason(
+    image_rgb,
+    instruction,
+    failure_reason=None,
+    pick_candidates=None,
+    place_candidates=None
+):
+    """
+    Generate a list of pick-place tasks from image + instruction.
+
+    Returns:
+        [
+            {"pick": "...", "place": "..."},
+            {"pick": "...", "place": "..."}
+        ]
+        or []
+    """
+
+    client = get_vlm_client()
+
+    img_path = save_image_tmp(image_rgb)
+
+    # 默认候选
+    if pick_candidates is None:
+        pick_candidates = [
+            "baseball",
+            "tennis ball",
+            "cup",
+            "carrot",
+            "tiddy bear",
+            "toy horse",
+            "brush",
+            "rubic's cube",
+            "red pen",
+            "glue stick",
+        ]
+
+    if place_candidates is None:
+        place_candidates = [
+            "pink plate",
+            "white plate",
+            "blue plate",
+            "basket",
+            "rubic's cube",
+            "shelf"
+        ]
+
+    # -----------------------------
+    # 语义类别定义（关键）
+    # -----------------------------
+
+    prompt = f"""
+        You are a robot task planner.
+
+        You are given:
+        1. A tabletop RGB image
+        2. A human instruction
+
+        Instruction:
+        {instruction}
+
+        Reason the instruction is not satisfied:
+        {failure_reason}
+
+        Goal:
+        Generate pick-and-place tasks to fix the problem described in the reason.
+        
+        Planning procedure:
+
+        Step1:
+        Understand the instruction.
+
+        Step2:
+        Analyze the scene.
+
+        Step3:
+        Use the failure reason to identify which objects still need to be moved.
+
+        Step4:
+        Generate pick-and-place tasks that will satisfy the instruction.
+
+        Rules:
+
+        1. Only select objects visible in the image.
+        2. Ignore objects already placed correctly.
+        3. Each task must contain exactly one pick and one place.
+        4. Do not generate unnecessary tasks.
+        5. If the instruction is already satisfied, return [].
+
+        Return JSON ONLY.
+
+        Format:
+
+        [
+            {{
+                "pick": "object_name",
+                "place": "target_name"
+            }},
+            ...
+        ]
+
+        Example:
+
+        [
+            {{
+                "pick": "baseball",
+                "place": "basket"
+            }},
+            {{
+                "pick": "tennis ball",
+                "place": "basket"
+            }}
+        ]
+
+        If the instruction is already satisfied, output:
+
+        [
+            {{
+                "pick": "",
+                "place": ""
+            }}
+        ]
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    # 提取 JSON
+    data = extract_first_json(content)
+
+    # -----------------------------
+    # 结构清洗
+    # -----------------------------
+
+    tasks = _normalize_task_list(data)
+
+    if not tasks:
+        print("⚠️ No task detected")
+
+    return tasks
+
+
+# 生成带方位描述的 pnp 目标列表
+def generate_tasks_with_descriptions(
+    image_rgb,
+    instruction,
+    history_tasks=None,
+):
+
+    client = get_vlm_client()
+    img_path = save_image_tmp(image_rgb)
+
+    prompt = f"""
+        You are a robot.
+
+        Convert instruction into a list of pick and place tasks.
+
+        Instruction:
+        {instruction}
+
+        Rules:
+        - pick = object
+        - place = location
+        - short natural phrases only
+        - If multiple objects need to be moved, output multiple tasks
+        - Each task = one pick + one place
+
+        Output JSON list:
+
+        [
+        {{"pick": "...", "place": "..."}},
+        {{"pick": "...", "place": "..."}}
+        ]
+
+        Examples:
+
+        Instruction: put the ball on the right of the cube
+        [
+        {{"pick": "ball", "place": "right of cube"}}
+        ]
+
+        Instruction: put all balls into the basket
+        [
+        {{"pick": "red ball", "place": "inside basket"}},
+        {{"pick": "blue ball", "place": "inside basket"}}
+        ]
+
+        Instruction: put toys into the white plate
+        [
+        {{"pick": "toy horse", "place": "inside white plate"}},
+        {{"pick": "teddy bear", "place": "inside white plate"}}
+        ]
+
+        Instruction: put the ball between the cup and the plate
+        [
+        {{"pick": "ball", "place": "between cup and plate"}}
+        ]
+    """
+
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    data = extract_first_json(content)
+
+    tasks = _normalize_task_list(data)
+
+    # -----------------------------
+    # 后处理（关键增强）
+    # -----------------------------
+    cleaned_tasks = []
+    for t in tasks:
+        pick = t.get("pick", "").strip()
+        place = t.get("place", "").strip()
+
+        if pick and place:
+            cleaned_tasks.append({
+                "pick": pick,
+                "place": place
+            })
+
+    if not cleaned_tasks:
+        print("⚠️ No task detected")
+
+    return cleaned_tasks
+
 
 
 # =========================================================
@@ -982,11 +1450,19 @@ def check_instruction_complete(image_rgb, instruction):
         Instruction:
         {instruction}
 
+        Rules:
+
+        1. The reason must be ONE short sentence.
+        2. Mention all the objects that are not placed correctly.
+        3. Mention the target container.
+        4. If the instruction is satisfied, say:"all required objects are already in the correct place".
+
         Return JSON only.
 
+        Format:
         {{
         "completed": true or false,
-        "reason": "short explanation"
+        "reason": "one  sentence explaining why the instruction is not satisfied"
         }}
     """
 
@@ -1012,13 +1488,8 @@ def check_instruction_complete(image_rgb, instruction):
 
     data = extract_first_json(content)
 
-    completed = bool(data.get("completed", False))
-    reason = str(data.get("reason", "")).strip()
-
-    return completed, reason
+    return _normalize_completion_result(data)
 
 
 if __name__ == "__main__":
     print(get_point_vllm(np.array(Image.open("aff.png")), "you need to grasp the mug"))
-
-
