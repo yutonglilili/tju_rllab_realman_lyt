@@ -1,0 +1,12 @@
+{
+  "camera_serial": "f1471338",
+  "control_fps": 15.0,
+  "max_delta_rotation_rad": 0.35,
+  "max_delta_translation_mm": 20.0,
+  "max_gripper_width": 0.09,
+  "model_dir": "model",
+  "robot_ip": "192.168.101.19",
+  "robot_type": "realman",
+  "state_source": "pose",
+  "task": "put baseball on the plate"
+}

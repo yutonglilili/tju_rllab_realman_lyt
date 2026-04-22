@@ -1,0 +1,22 @@
+[
+  [{"pick": "Coca Cola", "place": "plate"}, {"pick": "COSTA", "place": "plate"}, {"pick": "Sprite", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA can", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA can", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA can", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA can", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA bottle", "place": "plate"}],
+  [{"pick": "Coca Cola", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA can", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA bottle", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "Coca Cola", "place": "plate"}, {"pick": "COSTA", "place": "plate"}, {"pick": "Sprite", "place": "plate"}],
+  [{"pick": "green can", "place": "plate"}, {"pick": "red can", "place": "plate"}, {"pick": "bottle", "place": "plate"}],
+  [{"pick": "Coca Cola", "place": "plate"}, {"pick": "COSTA", "place": "plate"}, {"pick": "Sprite", "place": "plate"}],
+  [{"pick": "Coca Cola can", "place": "plate"}, {"pick": "green can", "place": "plate"}, {"pick": "COSTA can", "place": "plate"}]
+]

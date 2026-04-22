@@ -1,0 +1,44 @@
+{
+  "config": {
+    "batch_size": 2,
+    "chunk_size": 20,
+    "dataset": "/home/lyt/act_train/datasets/demo_lerobot",
+    "device": "cuda",
+    "dim_feedforward": 1024,
+    "dim_model": 256,
+    "dropout": 0.1,
+    "kl_weight": 10.0,
+    "latent_dim": 32,
+    "log_freq": 100,
+    "n_action_steps": 20,
+    "n_decoder_layers": 2,
+    "n_encoder_layers": 2,
+    "n_heads": 8,
+    "n_vae_encoder_layers": 4,
+    "num_workers": 0,
+    "optimizer_lr": 1e-05,
+    "optimizer_lr_backbone": 1e-05,
+    "optimizer_weight_decay": 0.0001,
+    "output": "outputs/act_realman",
+    "repo_id": "realman_demo",
+    "save_freq": 5000,
+    "steps": 2000,
+    "temporal_ensemble_coeff": null,
+    "vision_backbone": "resnet18",
+    "wandb": false,
+    "wandb_project": "realman-act",
+    "wandb_run": null
+  },
+  "dataset": "/home/lyt/act_train/datasets/demo_lerobot",
+  "episodes": 5,
+  "fps": 30,
+  "frames": 4337,
+  "input_features": [
+    "observation.image",
+    "observation.state"
+  ],
+  "output_features": [
+    "action"
+  ],
+  "repo_id": "realman_demo"
+}

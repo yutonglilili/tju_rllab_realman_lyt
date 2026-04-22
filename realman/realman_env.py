@@ -24,9 +24,9 @@ from Robotic_Arm.rm_robot_interface import (
 )
 
 JOINT_MAX_SPEED_DEG_S = 75.0
-SYNC_MOVEJ_SPEED_PERCENT = 75
-SYNC_MOVEP_SPEED_PERCENT = 75
-SYNC_MOVEL_SPEED_PERCENT = 75
+SYNC_MOVEJ_SPEED_PERCENT = 80
+SYNC_MOVEP_SPEED_PERCENT = 80
+SYNC_MOVEL_SPEED_PERCENT = 60
 GRIPPER_SPEED = 30
 GRIPPER_TOLERANCE = 0.001
 GRIPPER_TIMEOUT_S = 2.0
@@ -195,7 +195,6 @@ class RealmanDriver:
         """
         ret = self._move_pose_with_retry(pose, linear=False)
         if ret == 0:
-            print("第 1 次就解出来了。")
             return ret
         if ret != 0:
             for i in range(100):
@@ -430,6 +429,7 @@ class SyncController:
             action:
                 - "joint": 关节角
                 - "pose": 夹爪中心 TCP 位姿(xyzrpy 6维)
+                - "delta_pose": TCP 位姿增量(xyzrpy 6维)
                 - "gripper": 夹爪开度
 
         Returns:
@@ -445,6 +445,7 @@ class SyncController:
         - 单步调试(debug)
         """
         move_ret = None
+
         if "joint" in action:
             move_ret = self.driver.movej(action["joint"])
             
@@ -455,6 +456,33 @@ class SyncController:
                 move_ret = self.driver.movel(pose_eef)
             else:
                 move_ret = self.driver.movep(pose_eef)
+
+        elif "delta_pose" in action:
+            # 获取当前 TCP 位姿
+            current_state = self.get_state()
+            current_pose = current_state.pose   # TCP xyzrpy
+
+            delta_pose = action["delta_pose"]
+
+            # 转矩阵
+            T_current = T_from_realman_xyzrpy(current_pose)
+            T_delta = T_from_realman_xyzrpy(delta_pose)
+
+            # 计算目标位姿矩阵
+            T_target = T_current @ T_delta
+
+            # 转 xyzrpy
+            target_pose = realman_xyzrpy_from_T(T_target)
+
+            # 转 EEF xyzrpy
+            pose_eef = pose_tcp2eef(target_pose)
+
+            # 执行运动
+            motion_type = action.get("motion", "pose")
+            if motion_type == "linear":
+                move_ret = self.driver.movel(pose_eef)  # EEF xyzrpy
+            else:
+                move_ret = self.driver.movep(pose_eef)  # EEF xyzrpy
             
         state = self.get_state()
 

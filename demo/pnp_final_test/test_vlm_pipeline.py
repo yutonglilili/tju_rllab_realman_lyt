@@ -18,7 +18,7 @@ from multi_pointing_vllm_get_point_utils import get_point_vllm
 # =====================================================
 
 IMAGE_PATH = "/home/zhangzhao/lyt/camera/20260414_134926/rgb/00001.png"
-INSTRUCTION = "Point at the top of the Rubik's Cube."
+INSTRUCTION = "Point at the near left of the Rubik's Cube."
 NUM_SAMPLES = 20             
                      
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
