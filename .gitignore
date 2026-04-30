@@ -5,12 +5,12 @@ __pycache__/
 # data
 /datasets/
 /camera/
-/realman/act_train/datasets
+/realman/act_train/datasets/
 *.jpg
 *.png
 
 #/ model
-/realman/act_train/deploy
+/realman/act_train/deploy/
 
 # logs
 *.log
