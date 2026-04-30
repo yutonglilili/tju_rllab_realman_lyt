@@ -1,267 +1,216 @@
 """
-本脚本在 hq 的 pointing_human_realman.py 的基础上修改， 主要添加【数采记录并回放】的功能。
+支持：
+1. 点击图像控制机械臂
+2. 记录动作
+3. 回放动作
 """
 
-from realman.open3d_realsense_env import Open3dRealsenseEnv
-from realman.realman_env import RealmanEnv
+import os
+import sys
 import cv2
+import json
 import copy
+import glob
+import numpy as np
 from pathlib import Path
 from datetime import datetime
-import json
-import numpy as np
-import glob
 
-# Copy from: https://github.com/NVlabs/FoundationPose/blob/main/Utils.py
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-def draw_xyz_axis(color, ob_in_cam, K=np.eye(3), scale=0.1, thickness=3, transparency=0, is_input_rgb=True, save_path=None):
-    """
-    Draw XYZ coordinate axes on an image.
+from realman.realman_env import RealmanEnv, T_from_realman_xyzrpy, realman_xyzrpy_from_T
+from realman.open3d_realsense_env import Open3dRealsenseEnv
 
-    Args:
-        color: Input image (RGB or BGR)
-        ob_in_cam: Object pose in camera frame (4x4 transformation matrix)
-        scale: Scale factor for axis length
-        K: Camera intrinsic matrix (3x3)
-        thickness: Line thickness for drawing
-        transparency: Transparency factor (0-1)
-        is_input_rgb: Whether input is RGB (True) or BGR (False)
-        save_path: Optional path to save the result image
+# =========================
+# Utils
+# =========================
 
-    Returns:
-        Image with XYZ axes drawn
-    """
-    import cv2
+def convert_robot_state(robot_state):
+    """RobotState -> dict(obs)"""
+    return {
+        "Ttcp2base": T_from_realman_xyzrpy(robot_state.pose),
+        "gripper_open": robot_state.gripper,
+    }
 
-    def project_3d_to_2d(pt, K, ob_in_cam):
-        """Project 3D point to 2D image coordinates."""
-        pt = pt.reshape(4, 1)
-        projected = K @ ((ob_in_cam@pt)[:3,:])
-        projected = projected.reshape(-1)
-        projected = projected / projected[2]
-        return projected.reshape(-1)[:2].round().astype(int)
+def record_actions(obs):
+    if is_recording:
+        recorded_actions.append({
+            "Ttcp2base": obs["Ttcp2base"].tolist(),
+            "gripper_open": obs["gripper_open"]
+        })
 
-    # Convert RGB to BGR if needed (OpenCV uses BGR)
-    if is_input_rgb:
-        color = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
-    xx = np.array([1,0,0,1]).astype(float)
-    yy = np.array([0,1,0,1]).astype(float)
-    zz = np.array([0,0,1,1]).astype(float)
-    xx[:3] = xx[:3]*scale
-    yy[:3] = yy[:3]*scale
-    zz[:3] = zz[:3]*scale
-    origin = tuple(project_3d_to_2d(np.array([0,0,0,1]), K, ob_in_cam))
-    xx = tuple(project_3d_to_2d(xx, K, ob_in_cam))
-    yy = tuple(project_3d_to_2d(yy, K, ob_in_cam))
-    zz = tuple(project_3d_to_2d(zz, K, ob_in_cam))
-    line_type = cv2.LINE_AA
-    arrow_len = 0
-    tmp = color.copy()
-    tmp1 = tmp.copy()
-    tmp1 = cv2.arrowedLine(tmp1, origin, xx, color=(0,0,255), thickness=thickness, line_type=line_type, tipLength=arrow_len)
-    mask = np.linalg.norm(tmp1-tmp, axis=-1)>0
-    tmp[mask] = tmp[mask]*transparency + tmp1[mask]*(1-transparency)
-    tmp1 = tmp.copy()
-    tmp1 = cv2.arrowedLine(tmp1, origin, yy, color=(0,255,0), thickness=thickness, line_type=line_type, tipLength=arrow_len)
-    mask = np.linalg.norm(tmp1-tmp, axis=-1)>0
-    tmp[mask] = tmp[mask]*transparency + tmp1[mask]*(1-transparency)
-    tmp1 = tmp.copy()
-    tmp1 = cv2.arrowedLine(tmp1, origin, zz, color=(255,0,0), thickness=thickness, line_type=line_type, tipLength=arrow_len)
-    mask = np.linalg.norm(tmp1-tmp, axis=-1)>0
-    tmp[mask] = tmp[mask]*transparency + tmp1[mask]*(1-transparency)
-    tmp = tmp.astype(np.uint8)
+def replay_actions(path):
+    actions = []
+    with open(path, 'r') as f:
+        for line in f:
+            actions.append(json.loads(line))
+    return actions
 
-    if save_path:
-        cv2.imwrite(save_path, tmp)
-
-    # Convert back to RGB if input was RGB
-    if is_input_rgb:
-        tmp = cv2.cvtColor(tmp, cv2.COLOR_BGR2RGB)
-
-    return tmp
-
-# 全局变量用于记录动作数据
+# =========================
+# 全局变量
+# =========================
 recorded_actions = []
 is_recording = True
 
-def record_actions(obs):
-    """
-    记录当前机械臂的位姿和夹爪状态
-    Args:
-        obs: 当前观测数据
-    """
-    global recorded_actions, is_recording
-    if is_recording:
-        action_data = {
-            "Ttcp2base": obs["Ttcp2base"].tolist() if hasattr(obs["Ttcp2base"], 'tolist') else obs["Ttcp2base"],
-            "gripper_open": obs["gripper_open"]
-        }
-        recorded_actions.append(action_data)
+clicked_point = None
+clicked_flag = False
 
-def replay_actions(data_file_path):
-    """
-    从文件中读取并回放动作
-    Args:
-        data_file_path: 数据文件路径
-    Returns:
-        动作列表
-    """
-    actions = []
-    try:
-        with open(data_file_path, 'r') as f:
-            for line in f:
-                if line.strip():
-                    action_data = json.loads(line.strip())
-                    actions.append(action_data)
-    except FileNotFoundError:
-        print(f"文件 {data_file_path} 不存在")
-    except json.JSONDecodeError as e:
-        print(f"JSON 解析错误: {e}")
-    return actions
-
+# =========================
+# 主程序
+# =========================
 if __name__ == "__main__":
-    with open("/home/zhangzhao/lyt/camera/20260324_152356/camera_results.json", "r") as f:
+
+    with open("/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json", "r") as f:
         cam_results = json.load(f)
 
-    cv2.imshow("color", np.eye(100,100,3).astype(np.uint8)*255)
+    env = RealmanEnv("192.168.101.19")
+    rs_env = Open3dRealsenseEnv("f1471338")
+
+    cv2.namedWindow("color")
+
     clicked_point = None
-    clicked_point_new_clicked = False
-    def on_mouse(event, u, v, flags, param):
-        # if clicked, goto the position
+    clicked_flag = False
+
+    def on_mouse(event, x, y, flags, param):
+        global clicked_point, clicked_flag
         if event == cv2.EVENT_LBUTTONDOWN:
-            global clicked_point, clicked_point_new_clicked
-            clicked_point = (u, v)
-            clicked_point_new_clicked = True
+            clicked_point = (x, y)
+            clicked_flag = True
+
     cv2.setMouseCallback("color", on_mouse)
 
-    env = RealmanEnv("192.168.101.19")
-    # env = RealmanEnv("192.168.101.20")
-    rs_env = Open3dRealsenseEnv("f1471338")
     try:
-        obs = env.reset()
+        robot_state = env.reset()
+        obs = convert_robot_state(robot_state)
         obs |= rs_env.reset()
+
         action = {
-            "Ttcp2base": obs["Ttcp2base"],
-            "gripper_open": obs["gripper_open"],
+            "pose": robot_state.pose,
+            "gripper": robot_state.gripper,
         }
+
         disable_robot = False
+
         while True:
             try:
                 if not disable_robot:
-                    obs = env.step(action)
+                    robot_state = env.step(action)
                 else:
-                    obs = env.compute_observation()
-                obs |= rs_env.step(action)
+                    robot_state = env.get_state()
+
+                obs = convert_robot_state(robot_state)
+                obs |= rs_env.step()
+
             except Exception as e:
-                print(f"Error during step: {e}")
-                print("Disabling robot movement due to error")
+                print("ERROR:", e)
                 disable_robot = True
                 continue
 
-            # 记录动作数据
             record_actions(obs)
 
-            debug_img = obs["rgb"][:,:,::-1]
-            # import ipdb; ipdb.set_trace()
-            print(obs["Ttcp2base"])
-            debug_img = draw_xyz_axis(debug_img, np.linalg.inv(np.array(cam_results["Tcam2base"])), K=np.array(rs_env.meta_obs["intrinsic"]), is_input_rgb=False)
-            debug_img = draw_xyz_axis(debug_img, np.linalg.inv(np.array(cam_results["Tcam2base"])) @ obs["Ttcp2base"], K=np.array(rs_env.meta_obs["intrinsic"]), is_input_rgb=False)
+            img = obs["rgb"][:, :, ::-1]
 
-            if clicked_point is not None:
-                debug_img = cv2.circle(debug_img, clicked_point, 5, (0, 0, 255), -1)
-
-            cv2.imshow("color", debug_img)
-            k = cv2.waitKey(1)
-
-            if clicked_point_new_clicked:
-                clicked_point_new_clicked = False
-
-                print("Selected center point:", clicked_point)
+            # =========================
+            # 点击处理
+            # =========================
+            if clicked_flag:
+                clicked_flag = False
                 u, v = clicked_point
+
                 d = obs["depth"][v, u] / rs_env.meta_obs["depth_scale"]
 
-                x, y, z = np.linalg.inv(np.array(rs_env.meta_obs["intrinsic"])) @ (np.array([u, v, 1]) * d)
+                xyz = np.linalg.inv(np.array(rs_env.meta_obs["intrinsic"])) @ (np.array([u, v, 1]) * d)
+                xyz = np.array(cam_results["Tcam2base"]) @ np.append(xyz, 1)
 
-                x, y, z, _ = np.array(cam_results["Tcam2base"]) @ np.array([x, y, z, 1])
+                x, y, z = xyz[:3]
+                z += 0.02
 
-                z += 0.020 # z+2cm offset
+                new_T = copy.deepcopy(obs["Ttcp2base"])
+                new_T[:3, 3] = [x, y, z]
 
-                new_Ttcp2base = copy.deepcopy(obs["Ttcp2base"])
-                new_Ttcp2base[:3, 3] = np.array([x, y, z])
+                pose_tcp = realman_xyzrpy_from_T(new_T)
 
                 action = {
-                    "Ttcp2base": new_Ttcp2base,
-                    "gripper_open": obs["gripper_open"],
+                    "pose": pose_tcp,
+                    "gripper": obs["gripper_open"],
                 }
 
-                # import ipdb; ipdb.set_trace()
+                print("Move to:", x, y, z)
 
+            # =========================
+            # 显示
+            # =========================
+            if clicked_point:
+                cv2.circle(img, clicked_point, 5, (0, 0, 255), -1)
+
+            cv2.imshow("color", img)
+            k = cv2.waitKey(1)
+
+            # =========================
+            # 控制
+            # =========================
             if k == ord('c'):
-                # 只控制夹爪闭合，保持当前位置
-                action["gripper_open"] = 0.00
+                action["gripper"] = 0.0
                 disable_robot = False
-                print("Enable robot movement")
-                print("Closed gripper")
+                print("Close")
+
             elif k == ord('o'):
-                # 只控制夹爪张开，保持当前位置
-                action["gripper_open"] = 0.09
+                action["gripper"] = 0.09
                 disable_robot = False
-                print("Enable robot movement")
-                print("Open gripper")
-            elif k == ord('e'):
-                # 启用机器人运动，保持当前位置
-                disable_robot = False
-                print("Enable robot movement")
+                print("Open")
+
             elif k == ord('d'):
                 disable_robot = True
-                print("Disable robot movement")
-            elif k == ord('s'):
-                # 按时间戳保存记录的数据
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"recorded_actions_{timestamp}.txt"
-                with open(filename, 'w') as f:
-                    for action_data in recorded_actions:
-                        f.write(json.dumps(action_data) + '\n')
-                is_recording = False
-                print(f"动作数据已保存到文件: {filename}")
-                print(f"记录了 {len(recorded_actions)} 个动作")
-            elif k == ord('r'):
-                # 回放动作
-                action_files = glob.glob("recorded_actions_*.txt")
-                if not action_files:
-                    print("没有找到记录的动作文件")
-                else:
-                    # 使用最新的文件（按文件修改时间）
-                    latest_file = max(action_files, key=lambda x: Path(x).stat().st_mtime)
-                    print(f"正在回放文件: {latest_file}")
-                    replay_data = replay_actions(latest_file)
-                    if replay_data:
-                        print(f"开始回放 {len(replay_data)} 个动作")
-                        disable_robot = False
-                        for i, action_data in enumerate(replay_data):
-                            action = {
-                                "Ttcp2base": np.array(action_data["Ttcp2base"]),
-                                "gripper_open": action_data["gripper_open"]
-                            }
-                            if not disable_robot:
-                                obs = env.step(action)
-                            else:
-                                obs = env.compute_observation()
-                            obs |= rs_env.step(action)
-                            record_actions(obs)  # 继续记录回放时的状态
+                print("Disable")
 
-                            # 更新显示
-                            debug_img = obs["rgb"][:,:,::-1]
-                            debug_img = draw_xyz_axis(debug_img, np.linalg.inv(np.array(cam_results["Tcam2base"])), K=np.array(rs_env.meta_obs["intrinsic"]), is_input_rgb=False)
-                            debug_img = draw_xyz_axis(debug_img, np.linalg.inv(np.array(cam_results["Tcam2base"])) @ obs["Ttcp2base"], K=np.array(rs_env.meta_obs["intrinsic"]), is_input_rgb=False)
-                            cv2.putText(debug_img, f"Replay: {i+1}/{len(replay_data)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                            cv2.imshow("color", debug_img)
-                            k = cv2.waitKey(100)  # 等待100ms进行下一个动作
-                            if k == ord('q'):
-                                break
-                        print("回放完成")
+            elif k == ord('e'):
+                disable_robot = False
+                print("Enable")
+
+            elif k == ord('s'):
+                filename = f"recorded_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                with open(filename, 'w') as f:
+                    for a in recorded_actions:
+                        f.write(json.dumps(a) + '\n')
+                print("Saved:", filename)
+
+            elif k == ord('r'):
+                files = glob.glob("recorded_*.txt")
+                if not files:
+                    print("No file")
+                    continue
+
+                latest = max(files, key=lambda x: Path(x).stat().st_mtime)
+                print("Replay:", latest)
+
+                data = replay_actions(latest)
+
+                for i, a in enumerate(data):
+                    pose_tcp = realman_xyzrpy_from_T(np.array(a["Ttcp2base"]))
+
+                    action = {
+                        "pose": pose_tcp,
+                        "gripper": a["gripper_open"]
+                    }
+
+                    robot_state = env.step(action)
+                    obs = convert_robot_state(robot_state)
+                    obs |= rs_env.step()
+
+                    img = obs["rgb"][:, :, ::-1]
+                    cv2.putText(img, f"{i+1}/{len(data)}", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+                    cv2.imshow("color", img)
+                    if cv2.waitKey(50) == ord('q'):
+                        break
+
+                print("Replay done")
+
             elif k == ord('q'):
                 break
+
     finally:
         env.close()
         rs_env.close()
