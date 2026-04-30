@@ -5,6 +5,7 @@ __pycache__/
 # data
 /datasets/
 camera/
+/realman/act_train/datasets
 *.jpg
 *.png
 
