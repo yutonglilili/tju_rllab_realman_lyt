@@ -11,8 +11,8 @@ TRIGGER_COUNT_THRESHOLD: 2        # 连续触发2次才认为目标移动
 MOVE_OBJECT_THRESHOLD: 0.05       # pick 目标移动检测阈值(米，5cm)
 MOVE_CONTAINER_THRESHOLD: 0.2     # place 目标移动检测阈值(米，20cm)
 
-CAMERA_X_OFFSET: -0.01            # 修正相机标定x轴偏移(米)
-CAMERA_Y_OFFSET: -0.01            # 修正相机标定y轴偏移(米)
+CAMERA_X_OFFSET: -0.005           # 修正相机标定x轴偏移(米)
+CAMERA_Y_OFFSET: -0.005           # 修正相机标定y轴偏移(米)
 CAMERA_Z_OFFSET: 0.0              # 修正相机标定z轴偏移(米)
 
 PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)
@@ -28,26 +28,33 @@ TRAJECTORY_DOWNSAMPLE: 2          # 轨迹降采样率
 
 SAFE_HEIGHT: 0.06                 # 安全高度(米)
 
-PICK_Z_OFFSET: 0.005              # pick 阶段高度偏移(米)
-PLACE_Z_OFFSET: 0.09              # place 阶段高度偏移(米)
+# 设置固定 rpy, 如果为 null 则根据 xyz 计算角度
+PICK_RPY: null
+PLACE_RPY: null
 
-# 抓取角度参数
+# 根据 xyz 预设角度
 RX_DEGREE_CLOSE: 10
 RX_DEGREE_FAR_HIGH: 45
 RX_DEGREE_FAR_LOW: 30
 
-# pre和post位姿偏移
+# pick 和 place 三阶段的位姿偏移
 PRE_PICK_X_OFFSET: 0.0
-POST_PICK_X_OFFSET: 0.0
 PRE_PICK_Y_OFFSET: 0.04
-POST_PICK_Y_OFFSET: 0.04
 PRE_PICK_Z_OFFSET: 0.08
+PICK_X_OFFSET: 0.0
+PICK_Y_OFFSET: 0.0
+PICK_Z_OFFSET: -0.02
+POST_PICK_X_OFFSET: 0.0
+POST_PICK_Y_OFFSET: 0.04
 POST_PICK_Z_OFFSET: 0.1
 PRE_PLACE_X_OFFSET: 0.0
-POST_PLACE_X_OFFSET: 0.0
 PRE_PLACE_Y_OFFSET: 0.04
-POST_PLACE_Y_OFFSET: 0.04
 PRE_PLACE_Z_OFFSET: 0.08
+PLACE_X_OFFSET: 0.0
+PLACE_Y_OFFSET: 0.0
+PLACE_Z_OFFSET: 0.09
+POST_PLACE_X_OFFSET: 0.0
+POST_PLACE_Y_OFFSET: 0.0
 POST_PLACE_Z_OFFSET: 0.1
 
 # ═══════════════════════════════════════════════════
@@ -65,7 +72,7 @@ MAX_PICK_RETRIES: 5                # pick 阶段最大重试次数
 MAX_PLACE_RETRIES: 5               # place 阶段最大重试次数
 
 # 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
-CHECK_PICK_SUCCESS_MODE: 1        
+CHECK_PICK_SUCCESS_MODE: 1
 CHECK_PLACE_SUCCESS_MODE: 1
 
 # 检测裁剪区域大小

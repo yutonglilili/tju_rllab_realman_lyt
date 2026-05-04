@@ -23,15 +23,10 @@ if PROJECT_ROOT not in sys.path:
 
 from realman.realman_env import RealmanEnv, T_from_realman_xyzrpy, realman_xyzrpy_from_T
 from realman.open3d_realsense_env import Open3dRealsenseEnv
-from demo_new.skills.config_utils import ConfigNamespace, load_config_with_defaults, resolve_config_path
 
-# 基础工具函数
-from demo_new.skills.pnp_skill.pick_and_place_utils import (
-    make_target_T,
-    make_lift_T,
-    save_obs_image,
-    crop_image_around_point,
-)
+from demo_new.skills.tools.config_utils import ConfigNamespace, load_config_with_defaults, resolve_config_path
+from demo_new.skills.tools.utils import make_lift_T, make_target_T, save_obs_image, crop_image_around_point
+
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
     generate_tasks_from_scene_with_failure_reason,
     get_point_vllm,
@@ -42,79 +37,6 @@ from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
     generate_tasks_from_scene,
     generate_tasks_with_descriptions,
 )
-
-"""
-# ═══════════════════════════════════════════════════
-# 参数配置
-# ═══════════════════════════════════════════════════
-
-# 感知参数
-PERCEPTION_INTERVAL = 0.3       # 打点频率（秒），取决于 VLM 推理速度
-TASK_DISCOVERY_INTERVAL = 2.0   # 没任务时监视频率
-
-BUFFER_SIZE = 5                 # 移动检测缓冲区大小
-TRIGGER_COUNT_THRESHOLD = 2     # 连续触发2次才认为目标移动
-MOVE_OBJECT_THRESHOLD = 0.05    # pick 目标移动检测阈值（米，5cm）
-MOVE_CONTAINER_THRESHOLD = 0.20 # place 目标移动检测阈值（米，20cm）
-
-CAMERA_X_OFFSET = -0.01          # 修正相机标定x轴偏移
-CAMERA_Y_OFFSET = -0.01          # 修正相机标定y轴偏移
-CAMERA_Z_OFFSET = 0.00          # 修正相机标定z轴偏移
-
-# 规划参数
-SAFE_HEIGHT = 0.06              # 安全高度（米）
-TRAJECTORY_DOWNSAMPLE = 2       # 轨迹下采样率
-
-PICK_Z_OFFSET = 0.005           # pick 阶段 z 轴高度偏移（米）
-PLACE_Z_OFFSET = 0.09           # place 阶段 z 轴高度偏移（米）
-
-# 抓取角度参数
-RX_DEGREE_CLOSE = 10
-RX_DEGREE_FAR_HIGH = 45
-RX_DEGREE_FAR_LOW = 30
-
-# pre和post位姿偏移
-PRE_PICK_X_OFFSET = 0.00
-POST_PICK_X_OFFSET = 0.00
-PRE_PICK_Y_OFFSET = 0.04
-POST_PICK_Y_OFFSET = 0.04
-PRE_PICK_Z_OFFSET = 0.08
-POST_PICK_Z_OFFSET = 0.1
-PRE_PLACE_X_OFFSET = 0.00
-POST_PLACE_X_OFFSET = 0.00
-PRE_PLACE_Y_OFFSET = 0.04
-POST_PLACE_Y_OFFSET = 0.04
-PRE_PLACE_Z_OFFSET = 0.08
-POST_PLACE_Z_OFFSET = 0.1
-
-# 执行参数
-CONTROL_INTERVAL = 0.0          # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
-
-GRIPPER_OPEN = 0.09             # 夹爪张开程度
-GRIPPER_CLOSE = 0.03            # 夹爪闭合程度
-
-# 连续运动失败（SyncController 抛 RuntimeError）达到此次数则放弃本段轨迹，触发 need_replan 重新规划
-MAX_CONSECUTIVE_MOTION_FAILURES = 5
-
-# 任务参数
-MAX_PICK_RETRIES = 5            # pick 最大重试次数
-MAX_PLACE_RETRIES = 5           # place 最大重试次数
-
-# 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
-CHECK_PICK_SUCCESS_MODE = 1
-CHECK_PLACE_SUCCESS_MODE = 1
-
-# 检测裁剪区域大小
-CHECK_PICK_CROP_SIZE = 560
-CHECK_PLACE_CROP_SIZE = 640
-
-# 抓取/放置成功距离阈值
-PICK_SUCCESS_DIST_THRESHOLD = 0.10
-PLACE_SUCCESS_DIST_THRESHOLD = 0.20
-
-# 保存图像路径
-SAVE_DIR = "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
-"""
 
 # ═══════════════════════════════════════════════════
 # 配置参数
@@ -133,22 +55,28 @@ SKILL_CONFIG_KEYS = (
     "CAMERA_Z_OFFSET",
     "SAFE_HEIGHT",
     "TRAJECTORY_DOWNSAMPLE",
-    "PICK_Z_OFFSET",
-    "PLACE_Z_OFFSET",
+    "PICK_RPY",
+    "PLACE_RPY",
     "RX_DEGREE_CLOSE",
     "RX_DEGREE_FAR_HIGH",
     "RX_DEGREE_FAR_LOW",
     "PRE_PICK_X_OFFSET",
-    "POST_PICK_X_OFFSET",
     "PRE_PICK_Y_OFFSET",
-    "POST_PICK_Y_OFFSET",
     "PRE_PICK_Z_OFFSET",
+    "PICK_X_OFFSET",
+    "PICK_Y_OFFSET",
+    "PICK_Z_OFFSET",
+    "POST_PICK_X_OFFSET",
+    "POST_PICK_Y_OFFSET",
     "POST_PICK_Z_OFFSET",
     "PRE_PLACE_X_OFFSET",
-    "POST_PLACE_X_OFFSET",
     "PRE_PLACE_Y_OFFSET",
-    "POST_PLACE_Y_OFFSET",
     "PRE_PLACE_Z_OFFSET",
+    "PLACE_X_OFFSET",
+    "PLACE_Y_OFFSET",
+    "PLACE_Z_OFFSET",
+    "POST_PLACE_X_OFFSET",
+    "POST_PLACE_Y_OFFSET",
     "POST_PLACE_Z_OFFSET",
     "CONTROL_INTERVAL",
     "GRIPPER_OPEN",
@@ -320,14 +248,6 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
                 # 2D → 3D 转换
                 target_T = make_target_T(obs, int(point_2d[0]), int(point_2d[1]), rs_env, cam_results, home_T_tcp2base)
-
-                # 对 pick 阶段修正 z 轴高度
-                if task_phase == TaskPhase.PICK:
-                    target_T = make_lift_T(target_T, lift_z=config.PICK_Z_OFFSET)
-
-                # 对 place 阶段修正 z 轴高度
-                if task_phase == TaskPhase.PLACE:
-                    target_T = make_lift_T(target_T, lift_z=config.PLACE_Z_OFFSET)
 
                 # 修正通用的相机标定偏移
                 target_T = make_lift_T(target_T, lift_x=config.CAMERA_X_OFFSET, lift_y=config.CAMERA_Y_OFFSET, lift_z=config.CAMERA_Z_OFFSET)
@@ -690,51 +610,71 @@ def build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, tas
         None 表示规划失败
     """
 
+    # TODO: 使用 pre_target_T 作为目标，调用 curobo 规划器生成 pre 段轨迹
+    # trajectory = curobo_planner.plan(current_joint, pre_target_T)  
+
     config = state.config
 
-    # 根据目标 xyz 重新设置 pose
-    target_T_new = adjust_target_T(state, target_T, home_T_tcp2base)
-
-    # 计算 pre 位姿（目标上方安全位置）
     if task_phase == TaskPhase.PICK:
+        # 对 pick 位姿进行偏置
+        target_T = make_lift_T(target_T, lift_x=config.PICK_X_OFFSET, lift_y=config.PICK_Y_OFFSET, lift_z=config.PICK_Z_OFFSET)
+
+        # 修改 rpy
+        if config.PICK_RPY:
+            target_pose = realman_xyzrpy_from_T(target_T)
+            target_pose[3:] = np.array(config.PICK_RPY)
+            target_T_new = T_from_realman_xyzrpy(target_pose)
+        
+        else:
+            target_T_new = adjust_target_T(state, target_T, home_T_tcp2base)
+
+        target_pose = realman_xyzrpy_from_T(target_T_new)
+        
+        # 设置高度保护
+        if target_pose[2]<0.01:
+            target_pose[2]=0.01
+
         pre_target_T = make_lift_T(target_T_new, lift_x=config.PRE_PICK_X_OFFSET,lift_y=config.PRE_PICK_Y_OFFSET, lift_z=config.PRE_PICK_Z_OFFSET)
         pre_target_pose = realman_xyzrpy_from_T(pre_target_T)
-        pre_gripper_state = config.GRIPPER_OPEN
-    else:
-        pre_target_T = make_lift_T(target_T_new, lift_x=config.PRE_PLACE_X_OFFSET,lift_y=config.PRE_PLACE_Y_OFFSET, lift_z=config.PRE_PLACE_Z_OFFSET)
-        pre_target_pose = realman_xyzrpy_from_T(pre_target_T)
-        pre_gripper_state = config.GRIPPER_CLOSE
-
-    
-    # TODO: 使用 pre_target_T 作为目标，调用 curobo 规划器生成 pre 段轨迹
-    # trajectory = curobo_planner.plan(current_joint, pre_target_T)   
-
-    if task_phase == TaskPhase.PICK:
-
-        
-        target_pose = realman_xyzrpy_from_T(target_T_new)
-        target_gripper_state = config.GRIPPER_CLOSE
 
         post_target_T = make_lift_T(target_T_new, lift_x=config.POST_PICK_X_OFFSET,lift_y=config.POST_PICK_Y_OFFSET, lift_z=config.POST_PICK_Z_OFFSET)
         post_target_pose = realman_xyzrpy_from_T(post_target_T)
 
+        action_list = [
+            {"pose": pre_target_pose, "gripper": config.GRIPPER_OPEN, "tag": 0, "motion": "pose", "wait_gripper": True},
+            {"pose": target_pose, "gripper": config.GRIPPER_CLOSE, "tag": 1, "motion": "pose", "wait_gripper": True},
+            {"pose": post_target_pose, "tag": 2, "motion": "pose"},
+        ]
+    
     else:
+        # 对 place 位姿进行偏置
+        target_T = make_lift_T(target_T, lift_x=config.PLACE_X_OFFSET, lift_y=config.PLACE_Y_OFFSET, lift_z=config.PLACE_Z_OFFSET)
+
+        # 修改 rpy
+        if config.PLACE_RPY:
+            target_pose = realman_xyzrpy_from_T(target_T)
+            target_pose[3:] = np.array(config.PLACE_RPY)
+            target_T_new = T_from_realman_xyzrpy(target_pose)
+        
+        else:
+            target_T_new = adjust_target_T(state, target_T, home_T_tcp2base)
+
+        pre_target_T = make_lift_T(target_T_new, lift_x=config.PRE_PLACE_X_OFFSET,lift_y=config.PRE_PLACE_Y_OFFSET, lift_z=config.PRE_PLACE_Z_OFFSET)
+        pre_target_pose = realman_xyzrpy_from_T(pre_target_T)
 
         target_pose = realman_xyzrpy_from_T(target_T_new)
-        target_gripper_state = config.GRIPPER_OPEN
 
         post_target_T = make_lift_T(target_T_new, lift_x=config.POST_PLACE_X_OFFSET,lift_y=config.POST_PLACE_Y_OFFSET, lift_z=config.POST_PLACE_Z_OFFSET)
         post_target_pose = realman_xyzrpy_from_T(post_target_T)
 
-    # post 不传 gripper 状态
-    action_list = [
-        {"pose": pre_target_pose, "gripper": pre_gripper_state, "tag": 0, "motion": "pose", "wait_gripper": True},
-        {"pose": target_pose, "gripper": target_gripper_state, "tag": 1, "motion": "pose", "wait_gripper": True},
-        {"pose": post_target_pose, "tag": 2, "motion": "pose"},
-    ]
-
+        action_list = [
+            {"pose": pre_target_pose, "tag": 0, "motion": "pose"},
+            {"pose": target_pose, "gripper": config.GRIPPER_OPEN, "tag": 1, "motion": "pose", "wait_gripper": True},
+            {"pose": post_target_pose, "tag": 2, "motion": "pose"},
+        ]
+    
     return action_list
-            
+
 
 def adjust_target_T(state, target_T, home_T_tcp2base):
     """

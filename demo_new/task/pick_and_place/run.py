@@ -10,10 +10,10 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
-from demo_new.skills.config_utils import resolve_config_path
+from demo_new.skills.tools.config_utils import resolve_config_path
 
 from demo_new.skills.pnp_skill.pick_and_place import(
-    init_robot_env, init_camera_env,init_state, start_pnp_system,
+    init_robot_env, init_camera_env, init_state, start_pnp_system,
     run_all_tasks_by_instruction_with_position_description, shutdown_pnp_system
 )
     

@@ -1,59 +1,102 @@
-import numpy as np
+"""
+skill 共享的基础函数库
+"""
 import copy
-import json
+import numpy as np
+import cv2
+import numpy as np
 import os
 import time
-from datetime import datetime
-import cv2
 
 
-# ===============================
-# 日志记录功能（简单版本：只记录发送给web的数据）
-# ===============================
-_log_file = None  # 全局变量，保存当前会话的日志文件路径
-def log_web_data(payload, log_dir="lyt/logs", url=None, web_control_url=None):
+# ═══════════════════════════════════════════════════
+# 坐标计算工具
+# ═══════════════════════════════════════════════════
+
+# 根据打点坐标计算目标位置（T）
+def make_target_T(obs, u, v, rs_env, cam_results, ref_T, z_offset=0.0):
     """
-    记录发送给web的数据
-    
-    Args:
-        payload: 发送给web的payload数据
-        log_dir: 日志文件保存目录
-        url: 请求的URL，如果为None则使用默认的WEB_CONTROL_URL
-        web_control_url: 默认的WEB_CONTROL_URL字典，如果url为None时使用
+    ref_T: 参考姿态（通常是 home_T），确保旋转矩阵永远是标准向下的。
     """
-    global _log_file
+    T = copy.deepcopy(ref_T) 
+    d = obs["depth"][v, u] / rs_env.meta_obs["depth_scale"]
     
-    os.makedirs(log_dir, exist_ok=True)
+    """
+    # 深度有效性过滤
+    if d <= 0 or d > 1.2:
+        print("⚠ Warning: Invalid depth, using default 0.6m")
+        d = 0.6
+    """
     
-    # 如果是第一次调用，创建新的日志文件
-    if _log_file is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _log_file = os.path.join(log_dir, f"web_send_{timestamp}.json")
-        print(f"📝 日志文件: {_log_file}")
+    # 投影到基座坐标系
+    intrinsic_inv = np.linalg.inv(np.array(rs_env.meta_obs["intrinsic"]))
+    xyz_cam = intrinsic_inv @ (np.array([u, v, 1.0]) * d)
+    xyz_base = np.array(cam_results["Tcam2base"]) @ np.array([xyz_cam[0], xyz_cam[1], xyz_cam[2], 1.0])
     
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "url": url if url is not None else (web_control_url if web_control_url is not None else "unknown"),
-        "payload": payload
-    }
+    # 应用高度偏移
+    xyz_base[2] += z_offset
+    # 强制安全限位：绝不允许 Z 轴低于桌面以下 1cm
+    xyz_base[2] = max(xyz_base[2], -0.01) 
     
-    # 追加到文件（作为数组）
-    if os.path.exists(_log_file):
-        with open(_log_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            data.append(log_entry)
-        else:
-            data = [data, log_entry]
-        with open(_log_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    else:
-        # 新文件，创建数组
-        with open(_log_file, 'w', encoding='utf-8') as f:
-            json.dump([log_entry], f, ensure_ascii=False, indent=2)
+    T[:3, 3] = xyz_base[:3]
+    return T
+
+# 对矩阵的x,y,z进行校正
+def make_lift_T(T, lift_x= 0.0, lift_y=0.0, lift_z=0.0):
+    T_lift = copy.deepcopy(T)
+    T_lift[0, 3] += lift_x
+    T_lift[2, 3] += lift_z
+    T_lift[1, 3] += lift_y
+    return T_lift
+
+# 修改rpy（可能存在问题，需要check）
+def adjust_target_T(target_T, home_T_tcp2base):
+
+    rz_degree = 90
+    ry_degree = 30
+
+    # 转换为弧度
+    # rx = -1 * (rx_degree / 180) * np.pi
+    rz = -1 * (rz_degree / 180) * np.pi
+    ry = -1 * (ry_degree / 180) * np.pi
+    # rz = np.deg2rad(rz_degree)
+    # ry = np.deg2rad(ry_degree)
+
+    # 绕 Z 轴旋转矩阵
+    Rz = np.array([
+        [np.cos(rz), -np.sin(rz), 0],
+        [np.sin(rz),  np.cos(rz), 0],
+        [0,           0,          1]
+    ])
+
+    # 绕 Y 轴旋转矩阵
+    Ry = np.array([
+        [ np.cos(ry), 0, np.sin(ry)],
+        [ 0,          1, 0         ],
+        [-np.sin(ry), 0, np.cos(ry)]
+    ])
+
+    # 组合旋转：先 Z 后 Y (外在坐标轴旋转使用左乘)
+    # R_total = R_y * R_z
+    R_combined = Ry @ Rz
+
+    # 应用旋转
+    grasp_T = copy.deepcopy(home_T_tcp2base)
+    # 将组合后的旋转应用到基准姿态上
+    grasp_T[:3, :3] = R_combined @ home_T_tcp2base[:3, :3]
+    
+    # 保持位置与目标一致
+    grasp_T[:3, 3] = target_T[:3, 3]
+
+    return grasp_T
+
+
+# ═══════════════════════════════════════════════════
+# 图像处理工具
+# ═══════════════════════════════════════════════════
 
 # 保存观测图像
-def save_obs_image(image_rgb, prefix, object_name, container_name=None, save_dir="lyt/logs"):
+def save_obs_image(image_rgb, prefix, object_name, container_name=None, save_dir="demo_new/logs"):
 
     os.makedirs(save_dir, exist_ok=True)
 
@@ -76,11 +119,8 @@ def save_obs_image(image_rgb, prefix, object_name, container_name=None, save_dir
     print(f"📸 Image saved to: {save_path}")
 
 # 保存打点图像
-def save_pointed_image(image_rgb, point_2d, save_dir="logs", prefix="track"):
-    import cv2
-    import numpy as np
-    import os
-    import time
+def save_pointed_image(image_rgb, point_2d, save_dir="demo_new/logs", prefix="track"):
+    
 
     os.makedirs(save_dir, exist_ok=True)
 
@@ -118,10 +158,6 @@ def save_pointed_image(image_rgb, point_2d, save_dir="logs", prefix="track"):
     cv2.imwrite(path, img)
     print(f"📸 Saved pointed image: {path}")
 
-
-# ===============================
-# 可视化工具
-# ===============================
 # 可视化RGB图像并打点
 def visualize_rgb_with_point(rgb, point=None, window_name="Image"):
 
@@ -237,44 +273,3 @@ def crop_image_around_point(image_rgb, point_2d, crop_size=480):
     y2 = min(h, y2)
 
     return image_rgb[y1:y2, x1:x2].copy()
-
-
-# ===============================
-# 坐标计算工具
-# ===============================
-# 根据打点坐标计算目标位置（T）
-def make_target_T(obs, u, v, rs_env, cam_results, ref_T, z_offset=0.0):
-    """
-    ref_T: 参考姿态（通常是 home_T），确保旋转矩阵永远是标准向下的。
-    """
-    T = copy.deepcopy(ref_T) 
-    d = obs["depth"][v, u] / rs_env.meta_obs["depth_scale"]
-    
-    """
-    # 深度有效性过滤
-    if d <= 0 or d > 1.2:
-        print("⚠ Warning: Invalid depth, using default 0.6m")
-        d = 0.6
-    """
-    
-    # 投影到基座坐标系
-    intrinsic_inv = np.linalg.inv(np.array(rs_env.meta_obs["intrinsic"]))
-    xyz_cam = intrinsic_inv @ (np.array([u, v, 1.0]) * d)
-    xyz_base = np.array(cam_results["Tcam2base"]) @ np.array([xyz_cam[0], xyz_cam[1], xyz_cam[2], 1.0])
-    
-    # 应用高度偏移
-    xyz_base[2] += z_offset
-    # 强制安全限位：绝不允许 Z 轴低于桌面以下 1cm
-    xyz_base[2] = max(xyz_base[2], -0.01) 
-    
-    T[:3, 3] = xyz_base[:3]
-    return T
-
-# 对矩阵的x,y,z进行校正
-def make_lift_T(T, lift_x= 0.0, lift_y=0.0, lift_z=0.0):
-    T_lift = copy.deepcopy(T)
-    T_lift[0, 3] += lift_x
-    T_lift[2, 3] += lift_z
-    T_lift[1, 3] += lift_y
-    return T_lift
-

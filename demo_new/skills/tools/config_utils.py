@@ -1,3 +1,6 @@
+"""
+config 辅助函数库
+"""
 import json
 import os
 import re
@@ -19,11 +22,7 @@ class ConfigNamespace:
         return self._values[key]
 
 
-def resolve_config_path(
-    base_path,
-    filename="config.yaml",
-    fallback_filenames=("config.yml", "config.json"),
-):
+def resolve_config_path(base_path, filename="config.yaml", fallback_filenames=("config.yml", "config.json"),):
     base_path = os.path.abspath(base_path)
     if os.path.isfile(base_path):
         base_path = os.path.dirname(base_path)
@@ -107,6 +106,38 @@ _FLOAT_RE = re.compile(
     re.VERBOSE,
 )
 
+def _parse_yaml_list(lines, index, indent, *, source):
+    result = []
+
+    while index < len(lines):
+        line_indent, content, line_no = lines[index]
+
+        if line_indent < indent:
+            break
+        if line_indent > indent:
+            raise ValueError(f"Unexpected indentation in list at {source}:{line_no}")
+
+        if not content.startswith("- "):
+            break
+
+        item_text = content[2:].strip()
+        index += 1
+
+        if item_text:
+            result.append(_parse_yaml_scalar(item_text))
+        else:
+            # 子结构（嵌套 dict）
+            if index < len(lines) and lines[index][0] > line_indent:
+                child_indent = lines[index][0]
+                child_value, index = _parse_yaml_mapping(
+                    lines, index, child_indent, source=source
+                )
+                result.append(child_value)
+            else:
+                result.append(None)
+
+    return result, index
+
 
 def _parse_yaml_scalar(value):
     lowered = value.lower()
@@ -117,6 +148,13 @@ def _parse_yaml_scalar(value):
         return False
     if lowered in {"null", "~"}:
         return None
+
+    # ⭐ 新增：inline list 支持
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
 
     if value.startswith('"') and value.endswith('"'):
         try:
@@ -153,7 +191,7 @@ def _parse_yaml_mapping(lines, index, indent, *, source):
         if line_indent > indent:
             raise ValueError(f"Unexpected indentation in {source}:{line_no}")
         if content.startswith("- "):
-            raise ValueError(f"YAML lists are not supported in {source}:{line_no}")
+            return _parse_yaml_list(lines, index, indent, source=source)
         if ":" not in content:
             raise ValueError(f"Expected 'key: value' in {source}:{line_no}")
 

@@ -29,7 +29,10 @@ pnp_skill:
 
   # 设置固定 rpy, 如果为 null 则根据 xyz 计算角度
   PICK_RPY: null
-  PLACE_RPY: null
+  PLACE_RPY:
+    - 0.0623
+    - 0.4881
+    - 3.1218
 
   # 根据 xyz 预设角度
   RX_DEGREE_CLOSE: 10
@@ -42,18 +45,18 @@ pnp_skill:
   PRE_PICK_Z_OFFSET: 0.08
   PICK_X_OFFSET: 0.0
   PICK_Y_OFFSET: 0.0
-  PICK_Z_OFFSET: -0.02
+  PICK_Z_OFFSET: 0.005
   POST_PICK_X_OFFSET: 0.0
   POST_PICK_Y_OFFSET: 0.04
   POST_PICK_Z_OFFSET: 0.1
   PRE_PLACE_X_OFFSET: 0.0
-  PRE_PLACE_Y_OFFSET: 0.0
+  PRE_PLACE_Y_OFFSET: 0.04
   PRE_PLACE_Z_OFFSET: 0.08
   PLACE_X_OFFSET: 0.0
   PLACE_Y_OFFSET: 0.0
   PLACE_Z_OFFSET: 0.09
   POST_PLACE_X_OFFSET: 0.0
-  POST_PLACE_Y_OFFSET: 0.0
+  POST_PLACE_Y_OFFSET: 0.04
   POST_PLACE_Z_OFFSET: 0.1
 
   # ═══════════════════════════════════════════════════
