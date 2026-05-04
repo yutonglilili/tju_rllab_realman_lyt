@@ -1,0 +1,74 @@
+pnp_skill:
+  # pnp skill 默认配置文件
+
+  # ═══════════════════════════════════════════════════
+  # 感知参数
+  # ═══════════════════════════════════════════════════
+  PERCEPTION_INTERVAL: 0.3          # 打点频率(秒)，取决于 VLM 推理速度
+  TASK_DISCOVERY_INTERVAL: 2.0      # 没任务时监视频率
+
+  BUFFER_SIZE: 5                    # 移动检测缓冲区大小
+  TRIGGER_COUNT_THRESHOLD: 2        # 连续触发2次才认为目标移动
+  MOVE_OBJECT_THRESHOLD: 0.05       # pick 目标移动检测阈值(米，5cm)
+  MOVE_CONTAINER_THRESHOLD: 0.2     # place 目标移动检测阈值(米，20cm)
+
+  CAMERA_X_OFFSET: -0.01            # 修正相机标定x轴偏移(米)
+  CAMERA_Y_OFFSET: -0.01            # 修正相机标定y轴偏移(米)
+  CAMERA_Z_OFFSET: -0.02              # 修正相机标定z轴偏移(米)
+
+  PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)
+  PLACE_SUCCESS_DIST_THRESHOLD: 0.2 # 放置成功距离阈值(米)
+
+  # 保存图片目录
+  SAVE_DIR: "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
+
+  # ═══════════════════════════════════════════════════
+  # 规划参数
+  # ═══════════════════════════════════════════════════
+  TRAJECTORY_DOWNSAMPLE: 2          # 轨迹降采样率
+
+  SAFE_HEIGHT: 0.06                 # 安全高度(米)
+
+  PICK_Z_OFFSET: 0.005              # pick 阶段高度偏移(米)
+  PLACE_Z_OFFSET: 0.09              # place 阶段高度偏移(米)
+
+  # 抓取角度参数
+  RX_DEGREE_CLOSE: 10
+  RX_DEGREE_FAR_HIGH: 45
+  RX_DEGREE_FAR_LOW: 30
+
+  # pre和post位姿偏移
+  PRE_PICK_X_OFFSET: 0.0
+  POST_PICK_X_OFFSET: 0.0
+  PRE_PICK_Y_OFFSET: 0.04
+  POST_PICK_Y_OFFSET: 0.04
+  PRE_PICK_Z_OFFSET: 0.08
+  POST_PICK_Z_OFFSET: 0.1
+  PRE_PLACE_X_OFFSET: 0.0
+  POST_PLACE_X_OFFSET: 0.0
+  PRE_PLACE_Y_OFFSET: 0.04
+  POST_PLACE_Y_OFFSET: 0.04
+  PRE_PLACE_Z_OFFSET: 0.08
+  POST_PLACE_Z_OFFSET: 0.1
+
+  # ═══════════════════════════════════════════════════
+  # 执行参数
+  # ═══════════════════════════════════════════════════
+  CONTROL_INTERVAL: 0.0              # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
+
+  GRIPPER_OPEN: 0.09                 # 夹爪张开程度
+  GRIPPER_CLOSE: 0.03                # 夹爪闭合程度   
+
+  # 连续运动失败（SyncController 抛 RuntimeError）达到此次数则放弃本段轨迹，触发 need_replan 重新规划
+  MAX_CONSECUTIVE_MOTION_FAILURES: 5
+
+  MAX_PICK_RETRIES: 5                # pick 阶段最大重试次数
+  MAX_PLACE_RETRIES: 5               # place 阶段最大重试次数
+
+  # 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
+  CHECK_PICK_SUCCESS_MODE: 1        
+  CHECK_PLACE_SUCCESS_MODE: 1
+
+  # 检测裁剪区域大小
+  CHECK_PICK_CROP_SIZE: 560
+  CHECK_PLACE_CROP_SIZE: 640
