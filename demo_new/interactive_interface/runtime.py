@@ -1,28 +1,13 @@
 from __future__ import annotations
 
-import sys
 import threading
 import time
 import traceback
 from collections import deque
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-
-GRADIO_DIR = Path(__file__).resolve().parent
-if str(GRADIO_DIR) not in sys.path:
-    sys.path.insert(0, str(GRADIO_DIR))
-
-from task_interface import execute_task, get_task_definition
-
-
-PHASE_LABELS = {
-    "IDLE": "空闲",
-    "PICK": "正在抓取",
-    "PLACE": "正在放置",
-    "COMPLETE": "已完成",
-}
+from interactive_interface.task_interface import execute_task, get_task_definition
 
 
 def _humanize_task_item(task: Any) -> str:
@@ -202,7 +187,6 @@ class AppRuntime:
 
     def request_stop(self) -> None:
         self.stop_requested.set()
-        task_state = None
 
         with self.lock:
             task_state = self.task_state
@@ -234,10 +218,10 @@ class AppRuntime:
         if not initialized or rs_env is None:
             return cached_frame
 
-        if busy and force_refresh:
+        if busy:
             return cached_frame
 
-        if busy and not force_refresh:
+        if not force_refresh and cached_frame is not None:
             return cached_frame
 
         try:
@@ -255,7 +239,6 @@ class AppRuntime:
         return frame
 
     def _snapshot_task_state(self) -> dict[str, Any]:
-        task_state = None
         with self.lock:
             task_state = self.task_state
 

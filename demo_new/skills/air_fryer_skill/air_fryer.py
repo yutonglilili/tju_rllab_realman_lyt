@@ -16,8 +16,8 @@ from demo_new.skills.tools.utils import make_lift_T
 # air fryer skills 函数
 # ═══════════════════════════════════════════════════
 
-# 拉开空气炸锅
-def open_air_fryer(env, target_tcp_xyzrpy, direction_xyz):
+# 给点执行打开动作
+def open_action(env, target_tcp_xyzrpy, direction_xyz):
     
     target_tcp_T = T_from_realman_xyzrpy(target_tcp_xyzrpy)
     pre_T = make_lift_T(target_tcp_T, lift_x=0.05, lift_z=0.05)
@@ -55,8 +55,8 @@ def open_air_fryer(env, target_tcp_xyzrpy, direction_xyz):
     
     return True
 
-# 关闭空气炸锅
-def close_air_fryer(env, target_tcp_xyzrpy, direction_xyz):
+# 给点执行关闭动作
+def close_action(env, target_tcp_xyzrpy, direction_xyz):
 
     target_tcp_T = T_from_realman_xyzrpy(target_tcp_xyzrpy)
     pre_T = make_lift_T(target_tcp_T, lift_x=0.05, lift_z=0.05)
@@ -100,8 +100,8 @@ def close_air_fryer(env, target_tcp_xyzrpy, direction_xyz):
 
     return True
 
-# 旋转空气炸锅定时按钮
-def rotate_air_fryer_timer_button(env, target_tcp_xyzrpy, direction_xyz, rotate_angle=90):
+# 给点执行旋转动作
+def rotate_action(env, target_tcp_xyzrpy, direction_xyz, rotate_angle=90):
     # 移动到空气炸锅把手处并关闭夹爪
     target_T = T_from_realman_xyzrpy(target_tcp_xyzrpy)
     pre_T = make_lift_T(target_T, lift_x=0.05, lift_z=0.05)
@@ -139,7 +139,6 @@ def rotate_air_fryer_timer_button(env, target_tcp_xyzrpy, direction_xyz, rotate_
 
     return True
 
-
 # ═══════════════════════════════════════════════════
 # air fryer skills 使用示例
 # ═══════════════════════════════════════════════════
@@ -157,14 +156,14 @@ def main():
     eef_pose_open = np.array([-0.12,-0.377,0.181,-2.106,-0.404,1.78])
     tcp_pose_open = pose_eef2tcp(eef_pose_open)
     direction_xyz_open = np.array([1,0,0])
-    #open_air_fryer(env, tcp_pose_open, direction_xyz_open)
+    open_action(env, tcp_pose_open, direction_xyz_open)
 
     
     # 关闭空气炸锅
     eef_pose_close = np.array([-0.00,-0.377,0.179,-2.106,-0.404,1.78])
     tcp_pose_close = pose_eef2tcp(eef_pose_close)
     direction_xyz_close = np.array([1,0,0])
-    #close_air_fryer(env, tcp_pose_close, direction_xyz_close)
+    close_action(env, tcp_pose_close, direction_xyz_close)
     
     
     # 旋转空气炸锅定时按钮
@@ -174,7 +173,7 @@ def main():
     direction_xyz_rotate=np.array([1,0,0])
     rotate_angle=40
 
-    #rotate_air_fryer_timer_button(env, tcp_pose_rotate, direction_xyz_rotate, rotate_angle=rotate_angle)
+    rotate_action(env, tcp_pose_rotate, direction_xyz_rotate, rotate_angle=rotate_angle)
 
     print("tcp_pose_open: ", tcp_pose_open)
     print("eef_pose_open: ", eef_pose_open)

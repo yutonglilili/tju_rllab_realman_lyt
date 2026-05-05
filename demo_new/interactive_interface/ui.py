@@ -27,8 +27,6 @@ APP_CSS = """
 
 def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     first_task = next(iter(task_definitions.values()))
-    default_mode = first_task.default_params.get("mode", "with_position_description")
-    default_rotate_angle = first_task.default_params.get("rotate_angle", 90)
 
     with gr.Blocks(title="Robot Console", css=APP_CSS) as demo:
         gr.Markdown("# Robot Console")
@@ -44,23 +42,7 @@ def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, 
                 label=first_task.input_label,
                 value=first_task.default_instruction,
                 lines=4,
-                placeholder="输入任务指令后直接开始执行",
-            )
-
-            mode_dropdown = gr.Dropdown(
-                choices=list(first_task.mode_choices),
-                value=default_mode,
-                label="执行模式",
-                visible=first_task.show_mode,
-            )
-
-            rotate_angle_input = gr.Slider(
-                minimum=0,
-                maximum=180,
-                step=5,
-                value=default_rotate_angle,
-                label="定时旋钮角度",
-                visible=first_task.show_rotate_angle,
+                placeholder="输入任务指令后直接开始执行。",
             )
 
             with gr.Accordion("运行时连接", open=False):
@@ -106,8 +88,6 @@ def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, 
         components = {
             "task_dropdown": task_dropdown,
             "instruction_input": instruction_input,
-            "mode_dropdown": mode_dropdown,
-            "rotate_angle_input": rotate_angle_input,
             "robot_ip_input": robot_ip_input,
             "camera_serial_input": camera_serial_input,
             "cam_results_path_input": cam_results_path_input,

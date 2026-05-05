@@ -2,15 +2,12 @@
 VLM inference utilities for robot manipulation.
 """
 import json
-import os
 import re
 import ast
 from typing import Any, List
 import numpy as np
 import cv2
 from PIL import Image
-from collections import defaultdict
-from datetime import datetime
 
 from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 
@@ -196,6 +193,27 @@ def _normalize_completion_result(data):
                 return bool(item.get("completed", False)), str(item.get("reason", "")).strip()
 
     raise RuntimeError(f"Unexpected completion result format: {data!r}")
+
+def _normalize_roast_result(data):
+    if isinstance(data, dict):
+        return data
+
+    if isinstance(data, list):
+        items = []
+        minutes = 0
+
+        for d in data:
+            if not isinstance(d, dict):
+                continue
+            items.extend(d.get("items", []))
+            minutes = max(minutes, int(d.get("minutes", 0)))
+
+        return {
+            "items": list(set(items)),  # 去重
+            "minutes": minutes if minutes > 0 else 20
+        }
+
+    return {"items": [], "minutes": 20}
 
 
 # =========================================================
@@ -467,11 +485,6 @@ def _extract_points_by_regex(text: str) -> List[List[float]]:
 # 调用模型解析多步抓取和放置任务（只适用于明确指令）
 # =========================================================
 def parse_multi_pick_place_tasks(text_prompt):
-    """Robust multi-step pick & place task parser (production-ready)"""
-
-    import json
-    import re
-    import ast
 
     # ====== VLM call ======
     client = get_vlm_client()
@@ -602,6 +615,90 @@ def parse_multi_pick_place_tasks(text_prompt):
     print("✅ Parsed task plan:", result)
 
     return result
+
+
+# =========================================================
+# 针对空气炸锅任务，调用模型从指令中拆解出pnp列表和旋转角度
+# =========================================================
+def parse_roast_with_timer(instruction: str):
+    """
+    Parse roasting instruction into:
+    - pick & place tasks
+    - rotate angle (derived from time)
+
+    Returns:
+        {
+            "tasks": [...],
+            "rotate_angle": int
+        }
+    """
+
+    client = get_vlm_client()
+
+    prompt = f"""
+        You are a robot task planner.
+
+        Extract structured information from the instruction.
+
+        Instruction:
+        {instruction}
+
+        Requirements:
+
+        1. Identify all food items to roast.
+
+        2. Extract cooking time in minutes.
+
+        3. Output JSON ONLY.
+
+        Format:
+        {{
+            "items": ["sweet potato", "corn"],
+            "minutes": 10
+        }}
+
+        Rules:
+        - If multiple items, include all.
+        - If no time is specified, set minutes = 20 by default.
+        - Only use the allowed item names.
+    """
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    data = extract_first_json(content)
+
+    # =========================
+    # 解析结果
+    # =========================
+    data = _normalize_roast_result(data)
+
+    items = data.get("items", [])
+    minutes = int(data.get("minutes", 20))
+
+    # =========================
+    # 构建任务列表
+    # =========================
+    tasks = [
+        {"pick": item, "place": "open air fryer drawer"}
+        for item in items if item
+    ]
+
+    # =========================
+    # 时间 → 角度映射(10 min -> 45°)
+    # =========================
+
+    minutes = max(0, min(minutes, 40))
+
+    rotate_angle = int(minutes * 4.5)
+
+    return tasks, rotate_angle
 
 
 # =========================================================
