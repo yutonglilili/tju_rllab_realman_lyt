@@ -277,7 +277,7 @@ def build_demo() -> Any:
                 components["recent_actions_output"],
                 components["camera_image_output"],
             ],
-            every=1.5,
+            every=0.5,
             api_name=False,
             show_api=False,
         )

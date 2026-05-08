@@ -25,7 +25,7 @@ def main():
     cam_results_path = "/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json"
 
     # 指令
-    instruction = "Pick the baseball and place it on the pink plate."
+    instruction = "把魔方放到泰迪熊和玩具马的中间。"
 
     # 初始化资源
     env, home_T_tcp2base = init_robot_env(robot_ip)

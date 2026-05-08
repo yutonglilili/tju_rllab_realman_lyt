@@ -95,7 +95,7 @@ def main():
     task_config_path = resolve_config_path(__file__)
 
     # 指令
-    instruction = "Please roast oringe, set the timer for 20 minutes."
+    instruction = "帮我烤橘子和苹果，定时 20 分钟。"
 
     # 1. 初始化环境
     env = RealmanEnv(robot_ip="192.168.101.19", mode="sync")
@@ -113,7 +113,7 @@ def main():
 
     
     # 2. 拉开空气炸锅
-    # open_air_fryer(env, rs_env, cam_results, home_T_tcp2base)
+    open_air_fryer(env, rs_env, cam_results, home_T_tcp2base)
     
 
     # 3. 将食材放到空气炸锅中

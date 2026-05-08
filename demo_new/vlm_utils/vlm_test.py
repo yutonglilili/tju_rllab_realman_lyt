@@ -15,9 +15,11 @@ from multi_pointing_vllm_get_point_utils import *
 
 
 # 配置
-IMAGE_PATH = "/home/zhangzhao/lyt/captured_frames/20260416_203059_rgb.jpg"
-INSTRUCTION = "Put all the drink into the plate."
-NUM_SAMPLES = 20             
+# IMAGE_PATH = "/home/zhangzhao/lyt/水果和饮料.png"
+# IMAGE_PATH = "/home/zhangzhao/lyt/水果和玩具plus.png"
+IMAGE_PATH = "/home/zhangzhao/lyt/方位.png"
+INSTRUCTION = "魔方和橘子的中间"
+NUM_SAMPLES = 10             
                      
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save_vllm_test")
 
@@ -228,4 +230,5 @@ def test_generate_tasks_with_descriptions(instruction, image_path, save_dir, num
 
 
 if __name__ == "__main__":
-    test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    # test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)

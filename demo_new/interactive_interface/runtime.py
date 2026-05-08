@@ -21,6 +21,25 @@ def _humanize_task_item(task: Any) -> str:
     return str(task)
 
 
+class _CameraEnvProxy:
+    def __init__(self, runtime: "AppRuntime", wrapped_env: Any) -> None:
+        self._runtime = runtime
+        self._wrapped_env = wrapped_env
+        self._step_lock = threading.Lock()
+
+    def step(self, *args: Any, **kwargs: Any) -> Any:
+        with self._step_lock:
+            obs = self._wrapped_env.step(*args, **kwargs)
+        self._runtime._cache_camera_observation(obs)
+        return obs
+
+    def close(self) -> None:
+        self._wrapped_env.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped_env, name)
+
+
 class AppRuntime:
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -67,6 +86,77 @@ class AppRuntime:
         with self.lock:
             if self.task_state is task_state:
                 self.task_state = None
+
+    def _cache_camera_observation(self, obs: Any) -> Any:
+        frame = None
+        if isinstance(obs, dict):
+            frame = obs.get("rgb")
+
+        if frame is None:
+            return None
+
+        with self.lock:
+            self.last_camera_frame = frame
+            self.last_camera_error = ""
+
+        return frame
+
+    def _read_camera_frame(self, rs_env: Any, cached_frame: Any) -> Any:
+        try:
+            obs = rs_env.step()
+        except Exception as exc:
+            with self.lock:
+                self.last_camera_error = f"{type(exc).__name__}: {exc}"
+            return cached_frame
+
+        frame = self._cache_camera_observation(obs)
+        if frame is None:
+            return cached_frame
+        return frame
+
+    def _sync_home_pose_from_robot(self) -> None:
+        with self.lock:
+            env = self.env
+
+        if env is None:
+            return
+
+        try:
+            from realman.realman_env import T_from_realman_xyzrpy
+
+            robot_state = env.get_state()
+            home_T_tcp2base = T_from_realman_xyzrpy(robot_state.pose)
+        except Exception:
+            return
+
+        with self.lock:
+            self.home_T_tcp2base = home_T_tcp2base
+
+    def _reset_robot_to_initial_state(self) -> None:
+        with self.lock:
+            initialized = self.initialized
+            env = self.env
+            rs_env = self.rs_env
+            cached_frame = self.last_camera_frame
+
+        if not initialized or env is None:
+            return
+
+        try:
+            env.reset()
+        except Exception as exc:
+            error_message = f"Stop reset failed: {type(exc).__name__}: {exc}"
+            with self.lock:
+                self.status_message = error_message
+            self.log(error_message)
+            return
+
+        self._sync_home_pose_from_robot()
+
+        if rs_env is not None:
+            self._read_camera_frame(rs_env, cached_frame)
+
+        self.log("Current task exited and robot reset to the initial state.")
 
     def _close_resources(self) -> None:
         env = self.env
@@ -140,6 +230,8 @@ class AppRuntime:
             self.log("运行时初始化失败。")
             return False
 
+        rs_env = _CameraEnvProxy(self, rs_env)
+
         with self.lock:
             self.env = env
             self.rs_env = rs_env
@@ -187,10 +279,13 @@ class AppRuntime:
 
     def request_stop(self) -> None:
         self.stop_requested.set()
+        busy = self.is_busy()
 
         with self.lock:
             task_state = self.task_state
             self.status_message = "已发送停止请求。"
+
+        self.status_message = "Stopping the current task and resetting the robot."
 
         if task_state is not None:
             try:
@@ -208,6 +303,15 @@ class AppRuntime:
 
         self.log("已发送停止请求。")
 
+        if not busy:
+            self._reset_robot_to_initial_state()
+            with self.lock:
+                self.active_task_id = ""
+                self.active_task_title = ""
+                self.active_instruction = ""
+                self.task_state = None
+                self.stop_requested.clear()
+
     def get_camera_frame(self, *, force_refresh: bool = False) -> Any:
         with self.lock:
             initialized = self.initialized
@@ -221,22 +325,7 @@ class AppRuntime:
         if busy:
             return cached_frame
 
-        if not force_refresh and cached_frame is not None:
-            return cached_frame
-
-        try:
-            obs = rs_env.step()
-            frame = obs.get("rgb")
-        except Exception as exc:
-            with self.lock:
-                self.last_camera_error = f"{type(exc).__name__}: {exc}"
-            return cached_frame
-
-        with self.lock:
-            self.last_camera_frame = frame
-            self.last_camera_error = ""
-
-        return frame
+        return self._read_camera_frame(rs_env, cached_frame)
 
     def _snapshot_task_state(self) -> dict[str, Any]:
         with self.lock:
@@ -357,6 +446,10 @@ class AppRuntime:
             else:
                 self.log(f"{task_def.title} 已完成。")
         finally:
+            stop_requested = self.stop_requested.is_set()
+            if stop_requested:
+                self._reset_robot_to_initial_state()
+
             with self.lock:
                 self.worker_thread = None
                 self.active_task_id = ""

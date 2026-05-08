@@ -3,11 +3,17 @@ VLM inference utilities for robot manipulation.
 """
 import json
 import re
+import os
+import sys
 import ast
 from typing import Any, List
 import numpy as np
 import cv2
 from PIL import Image
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 
@@ -15,9 +21,17 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # Global VLM Configuration
 # =========================================================
 
+# ER1.5
 BASE_URL = "http://172.28.102.11:22002/v1"
 API_KEY = "EMPTY"
 MODEL_NAME = "Embodied-R1.5-SFT-0128"
+
+"""
+# Qwen3-VL
+BASE_URL = "http://172.28.102.11:22014/v1"
+API_KEY = "EMPTY"
+MODEL_NAME = "Qwen3-VL-8B-Instruct"
+"""
 
 TMP_IMAGE_PATH = "tmp_vlm_image.png"
 
@@ -214,6 +228,22 @@ def _normalize_roast_result(data):
         }
 
     return {"items": [], "minutes": 20}
+
+# 验证模型身份
+def test_model_identity():
+    client = get_vlm_client()
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{
+            "role": "user",
+            "content": "What model are you?"
+        }],
+        max_tokens=50,
+        temperature=0
+    )
+
+    print(response.choices[0].message.content)
 
 
 # =========================================================
@@ -1537,8 +1567,4 @@ def check_instruction_complete(image_rgb, instruction):
     data = extract_first_json(content)
 
     return _normalize_completion_result(data)
-
-
-
-
 
