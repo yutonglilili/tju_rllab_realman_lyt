@@ -1,9 +1,9 @@
 """
 添加使用带方位描述的 pick 和 place 目标指令调用模型打点，并在感知线程中改为对目标的移动的感知，而不再是对物体的感知。
 认为目标发生移动的判定：
-1. 时间差分：使用多帧计算平均值，如果平均值大于阈值，则认为目标发生移动；
-2. 连续触发：连续触发多次移动检测，如果次数大于阈值，则认为目标发生移动；
-3. 阈值设置：在 pick 阶段和 place 阶段，分别设置不同的移动阈值；
+1. 以当前打点和上一次打点的 3D 距离作为核心判断依据；
+2. 当距离超过阈值时，认为目标发生移动并触发重规划；
+3. 在 pick 阶段和 place 阶段，分别设置不同的移动阈值；
 4. 阶段限制：只在 approach 阶段做移动感知，其他阶段不进行移动感知；
 """
 import copy
@@ -43,6 +43,7 @@ from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
 # ═══════════════════════════════════════════════════
 DEFAULT_CONFIG_PATH = resolve_config_path(__file__)
 SKILL_CONFIG_SECTION_KEYS = ("pnp_skill", "pick_and_place")
+# BUFFER_SIZE/TRIGGER_COUNT_THRESHOLD are kept here for backward-compatible config loading.
 SKILL_CONFIG_KEYS = (
     "PERCEPTION_INTERVAL",
     "TASK_DISCOVERY_INTERVAL",
@@ -136,17 +137,13 @@ class SharedState:
         self.task_phase = TaskPhase.IDLE
 
         # ===== 感知输出 =====
-        # ===== 移动检测增强 =====
-        self.point_buffer = []              # 最近N帧点
-        self.smoothed_point = None          # 当前平滑点
-        self.last_smoothed_point = None     # 上一稳定点
-        self.move_trigger_count = 0         # 连续触发计数
+        # ===== 移动检测 =====
 
         self.target_description = None              # 当前追踪的目标描述
         self.latest_point_2d = None                 # 最新 2D 打点结果 (x, y)
         self.latest_point_3d = None                 # 最新 3D 坐标 (base 坐标系)
         self.latest_target_T = None                 # 最新目标物体的 4x4 位姿矩阵（此处为 TCP2BASE）
-        self.last_stable_point_3d = None            # 上次稳定 3D 坐标
+        self.previous_point_3d = None               # 上一次打点对应的 3D 坐标
         self.point_changed = False
         self.is_first_point = True
         self.tracking_mode = False                  # 追踪模式
@@ -179,16 +176,11 @@ class SharedState:
             self.latest_point_2d = None
             self.latest_point_3d = None
             self.latest_target_T = None
-            self.last_stable_point_3d = None
+            self.previous_point_3d = None
             self.point_changed = False
             self.is_first_point = True
             self.tracking_mode = False
             self.verify_mode = False
-
-            self.point_buffer = []
-            self.smoothed_point = None
-            self.last_smoothed_point = None
-            self.move_trigger_count = 0
 
             self.action_list = []
             self.action_index = 0
@@ -262,8 +254,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
                     if state.is_first_point:
                         # 第一个有效点
-                        state.last_stable_point_3d = target_xyz.copy()
-                        state.last_smoothed_point = target_xyz.copy()
+                        state.previous_point_3d = target_xyz.copy()
                         state.is_first_point = False
                         state.point_changed = True
                         state.need_replan.set()
@@ -327,7 +318,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                             state.latest_point_2d = None
                             state.latest_point_3d = None
                             state.latest_target_T = None
-                            state.last_stable_point_3d = None
+                            state.previous_point_3d = None
                             state.point_changed = False
                             state.is_first_point = True
                             state.tracking_mode = True
@@ -359,7 +350,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                             state.latest_point_2d = None
                             state.latest_point_3d = None
                             state.latest_target_T = None
-                            state.last_stable_point_3d = None
+                            state.previous_point_3d = None
                             state.point_changed = False
                             state.is_first_point = True
                             state.tracking_mode = True
@@ -370,12 +361,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
 # 移动检测
 def detect_target_movement(state, current_xyz, task_phase):
-    """
-    多策略融合目标移动检测：
-    1. 时间平滑
-    2. 差分检测
-    3. 连续触发
-    """
+    """基于当前打点和上一次打点的距离判断目标是否移动。"""
     config = state.config
 
     if task_phase == TaskPhase.PICK:
@@ -383,37 +369,23 @@ def detect_target_movement(state, current_xyz, task_phase):
     else:
         dist_threshold = config.MOVE_CONTAINER_THRESHOLD
 
-    # ===== 1. 更新 buffer =====
-    state.point_buffer.append(current_xyz.copy())
-    if len(state.point_buffer) > config.BUFFER_SIZE:
-        state.point_buffer.pop(0)
+    current_xyz = np.asarray(current_xyz, dtype=float)
+    if not np.all(np.isfinite(current_xyz)):
+        return False, 0.0
 
-    # ===== 2. 平滑 =====
-    smoothed = np.mean(state.point_buffer, axis=0)
+    previous_xyz = state.previous_point_3d
+    if previous_xyz is None:
+        state.previous_point_3d = current_xyz.copy()
+        return False, 0.0
 
-    # ===== 3. 初始化 =====
-    if state.smoothed_point is None:
-        state.smoothed_point = smoothed
-        state.last_smoothed_point = smoothed
-        return True, 0.0   # 第一次一定触发
+    previous_xyz = np.asarray(previous_xyz, dtype=float)
+    if not np.all(np.isfinite(previous_xyz)):
+        state.previous_point_3d = current_xyz.copy()
+        return False, 0.0
 
-    # ===== 4. 差分 =====
-    dist = np.linalg.norm(smoothed - state.last_smoothed_point)
-
-    # ===== 5. 判定逻辑 =====
-    if dist > dist_threshold:
-        state.move_trigger_count += 1
-    else:
-        state.move_trigger_count = 0
-
-    # ===== 6. 连续触发确认 =====
-    if state.move_trigger_count >= config.TRIGGER_COUNT_THRESHOLD:
-        state.last_smoothed_point = smoothed.copy()
-        state.last_stable_point_3d = smoothed.copy()
-        state.move_trigger_count = 0
-        return True, dist
-    else:
-        return False, dist
+    dist = float(np.linalg.norm(current_xyz - previous_xyz))
+    state.previous_point_3d = current_xyz.copy()
+    return dist > dist_threshold, dist
 
 # 结果检测
 def do_check_pick_success(state, env, rs_env, pick_target, point_2d=None, cam_results=None, home_T_tcp2base=None):
@@ -641,7 +613,7 @@ def build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, tas
         post_target_pose = realman_xyzrpy_from_T(post_target_T)
 
         action_list = [
-            {"pose": pre_target_pose, "gripper": config.GRIPPER_OPEN, "tag": 0, "motion": "pose", "wait_gripper": True},
+            {"pose": pre_target_pose, "gripper": config.GRIPPER_OPEN, "tag": 0, "motion": "pose", "wait_gripper": False},
             {"pose": target_pose, "gripper": config.GRIPPER_CLOSE, "tag": 1, "motion": "pose", "wait_gripper": True},
             {"pose": post_target_pose, "tag": 2, "motion": "pose"},
         ]
@@ -902,7 +874,7 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
                 state.verify_mode = False
                 state.target_description = next_task['pick']
                 state.is_first_point = True
-                state.last_stable_point_3d = None
+                state.previous_point_3d = None
 
             print("[主线程] 🔄 机械臂 Reset 中（感知线程已提前启动下一任务）...")
             env.reset()

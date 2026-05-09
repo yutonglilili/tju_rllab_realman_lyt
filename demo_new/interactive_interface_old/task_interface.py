@@ -35,7 +35,6 @@ def get_task_ui_payload(task_id: str) -> dict[str, Any]:
         "title": task.title,
         "input_label": task.input_label,
         "default_instruction": task.default_instruction,
-        "candidate_instructions": list(task.candidate_instructions),
     }
 
 

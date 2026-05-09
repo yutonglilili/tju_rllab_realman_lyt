@@ -10,8 +10,8 @@ pnp_skill:
   MOVE_OBJECT_THRESHOLD: 0.05       # pick 目标移动检测阈值(米，5cm)
   MOVE_CONTAINER_THRESHOLD: 0.2     # place 目标移动检测阈值(米，20cm)
 
-  CAMERA_X_OFFSET: -0.005           # 修正相机标定x轴偏移(米)
-  CAMERA_Y_OFFSET: -0.005           # 修正相机标定y轴偏移(米)
+  CAMERA_X_OFFSET: 0.01           # 修正相机标定x轴偏移(米)
+  CAMERA_Y_OFFSET: -0.02           # 修正相机标定y轴偏移(米)
   CAMERA_Z_OFFSET: 0.0              # 修正相机标定z轴偏移(米)
 
   PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)
@@ -44,20 +44,20 @@ pnp_skill:
   PRE_PICK_Y_OFFSET: 0.04
   PRE_PICK_Z_OFFSET: 0.08
   PICK_X_OFFSET: 0.0
-  PICK_Y_OFFSET: -0.015
+  PICK_Y_OFFSET: 0.0
   PICK_Z_OFFSET: 0.005
   POST_PICK_X_OFFSET: 0.0
   POST_PICK_Y_OFFSET: 0.04
   POST_PICK_Z_OFFSET: 0.13
-  PRE_PLACE_X_OFFSET: 0.0
+  PRE_PLACE_X_OFFSET: 0.03
   PRE_PLACE_Y_OFFSET: 0.0
   PRE_PLACE_Z_OFFSET: 0.1
-  PLACE_X_OFFSET: 0.12
+  PLACE_X_OFFSET: 0.08
   PLACE_Y_OFFSET: -0.03
   PLACE_Z_OFFSET: 0.07
-  POST_PLACE_X_OFFSET: 0.0
+  POST_PLACE_X_OFFSET: 0.03
   POST_PLACE_Y_OFFSET: 0.0
-  POST_PLACE_Z_OFFSET: 0.1
+  POST_PLACE_Z_OFFSET: 0.08
 
   # ═══════════════════════════════════════════════════
   # 执行参数

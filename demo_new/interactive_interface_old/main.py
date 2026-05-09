@@ -120,7 +120,6 @@ def _on_task_change(gr: Any, task_id: str) -> tuple[Any, ...]:
     return (
         gr.update(
             label=payload["input_label"],
-            choices=payload["candidate_instructions"],
             value=payload["default_instruction"],
         ),
         *_refresh_status_outputs(gr),
@@ -226,6 +225,31 @@ def build_demo() -> Any:
 
         components["stop_button"].click(
             fn=lambda: _on_stop(gr),
+            outputs=[
+                components["current_status_output"],
+                components["recent_actions_output"],
+                components["camera_image_output"],
+            ],
+            api_name=False,
+            show_api=False,
+        )
+
+        components["instruction_input"].submit(
+            fn=lambda task_id, instruction, robot_ip, camera_serial, cam_results_path: _on_start(
+                gr,
+                task_id,
+                instruction,
+                robot_ip,
+                camera_serial,
+                cam_results_path,
+            ),
+            inputs=[
+                components["task_dropdown"],
+                components["instruction_input"],
+                components["robot_ip_input"],
+                components["camera_serial_input"],
+                components["cam_results_path_input"],
+            ],
             outputs=[
                 components["current_status_output"],
                 components["recent_actions_output"],

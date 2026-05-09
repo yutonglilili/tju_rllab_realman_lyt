@@ -19,7 +19,6 @@ class TaskDefinition:
     title: str
     input_label: str
     default_instruction: str
-    candidate_instructions: tuple[str, ...]
     default_params: dict[str, Any]
     execute: Callable[["TaskExecutionContext"], dict[str, Any]]
 

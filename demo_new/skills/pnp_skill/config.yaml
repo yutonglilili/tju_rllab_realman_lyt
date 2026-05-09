@@ -11,8 +11,8 @@ TRIGGER_COUNT_THRESHOLD: 2        # 连续触发2次才认为目标移动
 MOVE_OBJECT_THRESHOLD: 0.05       # pick 目标移动检测阈值(米，5cm)
 MOVE_CONTAINER_THRESHOLD: 0.2     # place 目标移动检测阈值(米，20cm)
 
-CAMERA_X_OFFSET: -0.005           # 修正相机标定x轴偏移(米)
-CAMERA_Y_OFFSET: -0.005           # 修正相机标定y轴偏移(米)
+CAMERA_X_OFFSET: 0.05           # 修正相机标定x轴偏移(米)
+CAMERA_Y_OFFSET: -0.01           # 修正相机标定y轴偏移(米)
 CAMERA_Z_OFFSET: 0.0              # 修正相机标定z轴偏移(米)
 
 PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)

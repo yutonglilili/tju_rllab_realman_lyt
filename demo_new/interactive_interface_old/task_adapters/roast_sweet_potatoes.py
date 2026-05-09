@@ -100,7 +100,7 @@ def execute_roast_task(context: TaskExecutionContext) -> dict[str, Any]:
         cam_results=resources.cam_results,
         home_T_tcp2base=resources.home_T_tcp2base,
         prompt="Point at the handle of the air fryer.",
-        lift_offsets={"lift_x": 0.02, "lift_y": -0.01, "lift_z": -0.01},
+        lift_offsets={"lift_x": 0.02, "lift_y": -0.01},
         fixed_rpy=(0.0623, 0.4881, 3.1218),
     )
     open_action(resources.env, tcp_pose_open, np.array([1, 0, 0]))
@@ -137,7 +137,7 @@ def execute_roast_task(context: TaskExecutionContext) -> dict[str, Any]:
         cam_results=resources.cam_results,
         home_T_tcp2base=resources.home_T_tcp2base,
         prompt="Point at the handle of the air fryer.",
-        lift_offsets={"lift_x": 0.02, "lift_y": -0.01, "lift_z": -0.01},
+        lift_offsets={"lift_x": 0.02, "lift_y": -0.01},
         fixed_rpy=(0.0623, 0.4881, 3.1218),
     )
     close_action(resources.env, tcp_pose_close, np.array([1, 0, 0]))
@@ -149,7 +149,7 @@ def execute_roast_task(context: TaskExecutionContext) -> dict[str, Any]:
         cam_results=resources.cam_results,
         home_T_tcp2base=resources.home_T_tcp2base,
         prompt="Point at the round knob of the air fryer.",
-        lift_offsets={"lift_x": 0.033, "lift_y": -0.02, "lift_z": -0.017},
+        lift_offsets={"lift_x": 0.03, "lift_y": -0.02, "lift_z": -0.02},
         fixed_rpy=(0.0, 0.0, 3.1412),
     )
     rotate_action(
@@ -173,11 +173,8 @@ def build_definition() -> TaskDefinition:
     return TaskDefinition(
         task_id="roast_sweet_potatoes",
         title="Air Fryer Roast",
-        input_label="输入指令",
-        default_instruction="帮我烤个苹果，定时 20 分钟。",
-        candidate_instructions=(
-            "帮我烤个苹果和橘子，定时 30 分钟。",
-        ),
+        input_label="输入空气炸锅任务指令",
+        default_instruction="我需要烤红薯和玉米，定时 20 分钟。",
         default_params={},
         execute=execute_roast_task,
     )

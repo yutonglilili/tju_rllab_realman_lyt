@@ -38,12 +38,11 @@ def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, 
                 label="任务类型",
             )
 
-            instruction_input = gr.Dropdown(
+            instruction_input = gr.Textbox(
                 label=first_task.input_label,
-                choices=list(first_task.candidate_instructions),
                 value=first_task.default_instruction,
-                allow_custom_value=True,
-                filterable=True,
+                lines=4,
+                placeholder="输入任务指令后直接开始执行。",
             )
 
             with gr.Accordion("运行时连接", open=False):

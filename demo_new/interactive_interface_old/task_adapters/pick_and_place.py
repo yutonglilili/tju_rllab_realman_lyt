@@ -68,13 +68,8 @@ def build_definition() -> TaskDefinition:
     return TaskDefinition(
         task_id="pick_and_place",
         title="Pick and Place",
-        input_label="输入指令",
-        default_instruction="把香蕉放到盘子里。",
-        candidate_instructions=(
-            "把苹果和橘子放到盘子里。",
-            "把所有水果放到盘子里。",
-            "把魔方放到泰迪熊和玩具马的中间。",
-        ),
+        input_label="输入抓取放置指令",
+        default_instruction="把棒球放到粉色盘子里。",
         default_params={},
         execute=execute_pick_and_place,
     )
