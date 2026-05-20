@@ -640,7 +640,7 @@ def build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, tas
         post_target_pose = realman_xyzrpy_from_T(post_target_T)
 
         action_list = [
-            {"pose": pre_target_pose, "tag": 0, "motion": "pose"},
+            {"pose": pre_target_pose, "gripper": config.GRIPPER_CLOSE, "tag": 0, "motion": "pose", "wait_gripper": False},
             {"pose": target_pose, "gripper": config.GRIPPER_OPEN, "tag": 1, "motion": "pose", "wait_gripper": True},
             {"pose": post_target_pose, "tag": 2, "motion": "pose"},
         ]

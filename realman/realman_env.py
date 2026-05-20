@@ -23,7 +23,7 @@ from Robotic_Arm.rm_robot_interface import (
     rm_peripheral_read_write_params_t,
 )
 
-JOINT_MAX_SPEED_DEG_S = 85.0
+JOINT_MAX_SPEED_DEG_S = 80.0
 SYNC_MOVEJ_SPEED_PERCENT = 90
 SYNC_MOVEP_SPEED_PERCENT = 90
 SYNC_MOVEL_SPEED_PERCENT = 60
