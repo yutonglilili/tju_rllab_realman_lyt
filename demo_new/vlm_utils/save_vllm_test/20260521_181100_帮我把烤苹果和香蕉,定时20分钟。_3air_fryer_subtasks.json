@@ -1,0 +1,137 @@
+[
+  [
+    {
+      "skill": 0,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 2,
+      "args": {
+        "pick": "apple",
+        "place": "air fryer basket"
+      },
+      "motion": {
+        "pick_context": "normal",
+        "place_context": "inside_air_fryer"
+      }
+    },
+    {
+      "skill": 2,
+      "args": {
+        "pick": "banana",
+        "place": "air fryer basket"
+      },
+      "motion": {
+        "pick_context": "normal",
+        "place_context": "inside_air_fryer"
+      }
+    },
+    {
+      "skill": 1,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 3,
+      "args": {
+        "minutes": 20
+      },
+      "motion": {}
+    }
+  ],
+  [
+    {
+      "skill": 0,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 2,
+      "args": {
+        "pick": "apple",
+        "place": "air fryer basket"
+      },
+      "motion": {
+        "pick_context": "normal",
+        "place_context": "inside_air_fryer"
+      }
+    },
+    {
+      "skill": 2,
+      "args": {
+        "pick": "banana",
+        "place": "air fryer basket"
+      },
+      "motion": {
+        "pick_context": "normal",
+        "place_context": "inside_air_fryer"
+      }
+    },
+    {
+      "skill": 1,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 3,
+      "args": {
+        "minutes": 20
+      },
+      "motion": {}
+    }
+  ],
+  [
+    {
+      "skill": 0,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 2,
+      "args": {
+        "pick": "apple",
+        "place": "air fryer basket"
+      },
+      "motion": {
+        "pick_context": "normal",
+        "place_context": "inside_air_fryer"
+      }
+    },
+    {
+      "skill": 2,
+      "args": {
+        "pick": "banana",
+        "place": "air fryer basket"
+      },
+      "motion": {
+        "pick_context": "normal",
+        "place_context": "inside_air_fryer"
+      }
+    },
+    {
+      "skill": 1,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 3,
+      "args": {
+        "minutes": 20
+      },
+      "motion": {}
+    }
+  ]
+]

@@ -1,0 +1,7 @@
+[
+  [{"pick": "red horse toy", "place": "blue plate"}, {"pick": "Rubik's cube", "place": "blue plate"}],
+  [{"pick": "red horse toy", "place": "pink plate"}, {"pick": "Rubik's cube", "place": "pink plate"}],
+  [{"pick": "red horse toy", "place": "blue plate"}, {"pick": "rubik's cube", "place": "blue plate"}],
+  [{"pick": "red toy horse", "place": "blue plate"}, {"pick": "Rubik's cube", "place": "blue plate"}],
+  [{"pick": "red horse toy", "place": "pink plate"}, {"pick": "Rubik's cube", "place": "pink plate"}]
+]

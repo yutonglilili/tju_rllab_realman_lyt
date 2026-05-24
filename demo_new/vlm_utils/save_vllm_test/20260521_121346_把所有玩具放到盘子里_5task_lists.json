@@ -1,0 +1,7 @@
+[
+  [{"pick": "red toy horse", "place": "blue plate"}, {"pick": "yellow lemon", "place": "blue plate"}, {"pick": "yellow banana", "place": "blue plate"}, {"pick": "tennis ball", "place": "pink plate"}, {"pick": "orange tomato", "place": "pink plate"}],
+  [{"pick": "red toy horse", "place": "pink plate"}, {"pick": "yellow lemon toy", "place": "pink plate"}, {"pick": "yellow banana toy", "place": "pink plate"}, {"pick": "Rubik's cube", "place": "pink plate"}, {"pick": "tennis ball", "place": "pink plate"}, {"pick": "orange toy", "place": "pink plate"}],
+  [{"pick": "red toy horse", "place": "blue plate"}, {"pick": "yellow lemon", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "orange", "place": "blue plate"}, {"pick": "banana", "place": "blue plate"}, {"pick": "Rubik's cube", "place": "blue plate"}],
+  [{"pick": "red toy horse", "place": "blue plate"}, {"pick": "yellow lemon", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "orange", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}, {"pick": "Rubik's cube", "place": "pink plate"}],
+  [{"pick": "red toy horse", "place": "pink plate"}, {"pick": "yellow lemon", "place": "pink plate"}, {"pick": "banana", "place": "pink plate"}, {"pick": "Rubik's cube", "place": "pink plate"}, {"pick": "tennis ball", "place": "pink plate"}, {"pick": "orange", "place": "pink plate"}]
+]

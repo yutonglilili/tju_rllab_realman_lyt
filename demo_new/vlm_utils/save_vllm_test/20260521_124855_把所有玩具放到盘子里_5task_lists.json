@@ -1,0 +1,7 @@
+[
+  [{"pick": "blue teddy bear", "place": "plate"}, {"pick": "cube toy", "place": "plate"}, {"pick": "small dog toy", "place": "plate"}],
+  [{"pick": "玩具熊", "place": "盘子里"}, {"pick": "玩具狗", "place": "盘子里"}, {"pick": "玩具方块", "place": "盘子里"}],
+  [{"pick": "blue teddy bear", "place": "plate"}, {"pick": "cube toy", "place": "plate"}, {"pick": "plush dog", "place": "plate"}, {"pick": "red block", "place": "plate"}, {"pick": "yellow block", "place": "plate"}],
+  [{"pick": "蓝色玩偶熊", "place": "盘子里"}, {"pick": "毛绒小狗", "place": "盘子里"}, {"pick": "魔方", "place": "盘子里"}],
+  [{"pick": "blue teddy bear", "place": "plate"}, {"pick": "cube toy", "place": "plate"}, {"pick": "plush dog", "place": "plate"}, {"pick": "red block", "place": "plate"}, {"pick": "orange block", "place": "plate"}, {"pick": "yellow block", "place": "plate"}]
+]

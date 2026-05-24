@@ -15,7 +15,7 @@ from realman.open3d_realsense_env import Open3dRealsenseEnv
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import get_point_vllm, parse_roast_with_timer
 
 from demo_new.skills.tools.config_utils import resolve_config_path
-from demo_new.skills.tools.utils import make_target_T, make_lift_T, save_pointed_image
+from demo_new.skills.tools.utils import make_target_T, make_lift_T
 
 from demo_new.skills.air_fryer_skill.air_fryer import open_action, close_action, rotate_action
 from demo_new.skills.pnp_skill.pick_and_place import init_state, start_pnp_system, run_all_tasks
@@ -64,7 +64,6 @@ def close_air_fryer(env, rs_env, cam_results, home_T_tcp2base):
     direction_xyz_close = np.array([1,0,0])
 
     close_action(env, tcp_pose_close, direction_xyz_close)
-
 
 # 设置时间
 def set_time(env, rs_env, cam_results, home_T_tcp2base, rotate_angle=90):

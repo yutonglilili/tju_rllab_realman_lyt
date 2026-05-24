@@ -13,6 +13,7 @@ class VLLMOnlineClient:
         base_url: str = "http://localhost:22002/v1",
         api_key: str = "EMPTY",
         model_name: str = "Embodied-R1.5-SFT-0128",
+        default_headers: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize vLLM online client
@@ -21,8 +22,13 @@ class VLLMOnlineClient:
             base_url: Base URL of the vLLM server
             api_key: API key (use "EMPTY" if no authentication)
             model_name: Model name as specified in --served-model-name
+            default_headers: Optional extra headers for an OpenAI-compatible gateway
         """
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.client = OpenAI(
+            base_url=base_url, 
+            api_key=api_key,
+            default_headers=default_headers,
+        )
         self.model_name = model_name
 
     @staticmethod

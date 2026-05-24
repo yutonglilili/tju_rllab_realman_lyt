@@ -11,16 +11,20 @@ import numpy as np
 from PIL import Image
 import cv2
 
-from multi_pointing_vllm_get_point_utils import *
+# from multi_pointing_vllm_get_point_utils import *
+from vllm_from_api_key import *
 
 
 # 配置
-# IMAGE_PATH = "/home/zhangzhao/lyt/水果和饮料.png"
+IMAGE_PATH = "/home/zhangzhao/lyt/00005.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/水果和玩具plus.png"
-IMAGE_PATH = "/home/zhangzhao/lyt/方位.png"
-INSTRUCTION = "魔方和橘子的中间"
-NUM_SAMPLES = 10             
-                     
+# IMAGE_PATH = "/home/zhangzhao/lyt/方位.png"
+# IMAGE_PATH = "/home/zhangzhao/lyt/带遮挡.png"
+# INSTRUCTION = "把魔方放到盘子里。"
+# INSTRUCTION = "帮我把烤苹果和香蕉,定时20分钟。"
+INSTRUCTION = "帮我把苹果和香蕉从空气炸锅里取出来放到盘子上。"
+NUM_SAMPLES = 3
+
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save_vllm_test")
 
 # 加载图像
@@ -228,7 +232,79 @@ def test_generate_tasks_with_descriptions(instruction, image_path, save_dir, num
     print("\nSaved to:", save_path)
     print("\n========== DONE ==========\n")
 
+# 给定指令和图像路径，测试空气炸锅子任务生成。
+def test_generate_air_fryer_subtasks(
+    instruction,
+    image_path,
+    save_dir,
+    num_samples,
+):
+
+    print("\n========== AIR FRYER SUBTASK TEST ==========\n")
+
+    print("Image:", image_path)
+    print("Instruction:", instruction)
+    print("Num samples:", num_samples)
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    image_rgb = load_image(image_path)
+
+    all_subtask_lists = []
+
+    # =====================================================
+    # 多次采样
+    # =====================================================
+
+    for i in range(num_samples):
+
+        print(f"\n[{i+1}/{num_samples}] Generating subtasks...\n")
+
+        subtasks = generate_air_fryer_subtasks(
+            image_rgb=image_rgb,
+            instruction=instruction,
+        )
+
+        if not subtasks:
+            subtasks = []
+
+        all_subtask_lists.append(subtasks)
+
+        # raw json
+        print("\nRaw JSON:")
+
+        print(
+            json.dumps(
+                subtasks,
+                ensure_ascii=False,
+                indent=2
+            )
+        )
+
+    # =====================================================
+    # 保存结果
+    # =====================================================
+
+    save_path = _build_test_save_path(
+        save_dir=save_dir,
+        instruction=instruction,
+        suffix=f"{num_samples}air_fryer_subtasks.json",
+    )
+
+    with open(save_path, "w", encoding="utf-8") as f:
+
+        json.dump(
+            all_subtask_lists,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    print("\nSaved to:", save_path)
+
+    print("\n========== DONE ==========\n")
 
 if __name__ == "__main__":
     # test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
-    test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    # test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    test_generate_air_fryer_subtasks(INSTRUCTION,IMAGE_PATH,SAVE_DIR,NUM_SAMPLES)

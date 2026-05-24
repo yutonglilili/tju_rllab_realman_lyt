@@ -93,9 +93,6 @@ SKILL_CONFIG_KEYS = (
     "PLACE_SUCCESS_DIST_THRESHOLD",
     "SAVE_DIR",
 )
-OPTIONAL_SKILL_CONFIG_KEYS = (
-    "motion_profiles",
-)
 
 Config = ConfigNamespace
 
@@ -105,56 +102,10 @@ def load_pnp_config(task_config_path=None, task_config=None):
         override_config_path=task_config_path,
         override_config=task_config,
         section_keys=SKILL_CONFIG_SECTION_KEYS,
-        allowed_keys=SKILL_CONFIG_KEYS + OPTIONAL_SKILL_CONFIG_KEYS,
+        allowed_keys=SKILL_CONFIG_KEYS,
         required_keys=SKILL_CONFIG_KEYS,
         config_cls=Config,
     )
-
-
-def _config_like_to_dict(config_like):
-    if config_like is None:
-        return {}
-
-    if hasattr(config_like, "to_dict") and callable(config_like.to_dict):
-        config_dict = config_like.to_dict()
-        if not isinstance(config_dict, dict):
-            raise TypeError("ConfigNamespace.to_dict() must return a dict.")
-        return dict(config_dict)
-
-    if isinstance(config_like, dict):
-        return dict(config_like)
-
-    raise TypeError(
-        f"Motion profile must be a dict-like object, got {type(config_like).__name__}."
-    )
-
-
-def _normalize_motion_profile(profile):
-    profile_dict = _config_like_to_dict(profile)
-
-    for rpy_key in ("PICK_RPY", "PLACE_RPY"):
-        rpy_value = profile_dict.get(rpy_key)
-
-        if isinstance(rpy_value, np.ndarray):
-            profile_dict[rpy_key] = rpy_value.tolist()
-        elif isinstance(rpy_value, tuple):
-            profile_dict[rpy_key] = list(rpy_value)
-
-    return profile_dict
-
-
-def _build_phase_config(state, task_phase):
-    config_values = _config_like_to_dict(state.config)
-
-    with state.lock:
-        current_task = state.current_task or {}
-        profile_key = "_pick_profile" if task_phase == TaskPhase.PICK else "_place_profile"
-        profile = current_task.get(profile_key)
-
-    if profile:
-        config_values.update(_normalize_motion_profile(profile))
-
-    return Config(config_values)
 
 
 # ═══════════════════════════════════════════════════
@@ -634,18 +585,14 @@ def build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, tas
     # TODO: 使用 pre_target_T 作为目标，调用 curobo 规划器生成 pre 段轨迹
     # trajectory = curobo_planner.plan(current_joint, pre_target_T)  
 
-    config = _build_phase_config(state, task_phase)
+    config = state.config
 
     if task_phase == TaskPhase.PICK:
         # 对 pick 位姿进行偏置
         target_T = make_lift_T(target_T, lift_x=config.PICK_X_OFFSET, lift_y=config.PICK_Y_OFFSET, lift_z=config.PICK_Z_OFFSET)
 
         # 修改 rpy
-        if config.PICK_RPY is not None:
-            print(
-                "[PnP] use PICK_RPY override:",
-                np.round(np.asarray(config.PICK_RPY, dtype=float), 4).tolist()
-            )
+        if config.PICK_RPY:
             target_pose = realman_xyzrpy_from_T(target_T)
             target_pose[3:] = np.array(config.PICK_RPY)
             target_T_new = T_from_realman_xyzrpy(target_pose)
@@ -676,11 +623,7 @@ def build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, tas
         target_T = make_lift_T(target_T, lift_x=config.PLACE_X_OFFSET, lift_y=config.PLACE_Y_OFFSET, lift_z=config.PLACE_Z_OFFSET)
 
         # 修改 rpy
-        if config.PLACE_RPY is not None:
-            print(
-                "[PnP] use PLACE_RPY override:",
-                np.round(np.asarray(config.PLACE_RPY, dtype=float), 4).tolist()
-            )
+        if config.PLACE_RPY:
             target_pose = realman_xyzrpy_from_T(target_T)
             target_pose[3:] = np.array(config.PLACE_RPY)
             target_T_new = T_from_realman_xyzrpy(target_pose)
@@ -870,48 +813,14 @@ def execution_thread(state, env):
 # ═══════════════════════════════════════════════════
 
 # 执行单个任务
-def run_single_task(
-    state,
-    env,
-    rs_env,
-    cam_results,
-    task,
-    home_T_tcp2base,
-    pick_profile=None,
-    place_profile=None,
-    special_pick_rpy=None,
-    special_place_rpy=None,
-):
+def run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base):
     if state.stop_all.is_set():
         return False
-
-    resolved_pick_profile = _normalize_motion_profile(pick_profile)
-    resolved_place_profile = _normalize_motion_profile(place_profile)
-
-    if special_pick_rpy is not None:
-        resolved_pick_profile["PICK_RPY"] = np.asarray(
-            special_pick_rpy,
-            dtype=float,
-        ).tolist()
-
-    if special_place_rpy is not None:
-        resolved_place_profile["PLACE_RPY"] = np.asarray(
-            special_place_rpy,
-            dtype=float,
-        ).tolist()
-
-    current_task = dict(task)
-
-    if resolved_pick_profile:
-        current_task["_pick_profile"] = resolved_pick_profile
-
-    if resolved_place_profile:
-        current_task["_place_profile"] = resolved_place_profile
 
     state.reset_state()
 
     with state.lock:
-        state.current_task = current_task
+        state.current_task = task
         state.task_phase = TaskPhase.PICK
         state.tracking_mode = True
         state.target_description = task['pick']
@@ -921,16 +830,7 @@ def run_single_task(
             break
 
     if not state.task_done.is_set():
-        with state.lock:
-            if state.current_task is not None:
-                state.current_task.pop("_pick_profile", None)
-                state.current_task.pop("_place_profile", None)
         return False
-
-    with state.lock:
-        if state.current_task is not None:
-            state.current_task.pop("_pick_profile", None)
-            state.current_task.pop("_place_profile", None)
 
     env.reset()
 

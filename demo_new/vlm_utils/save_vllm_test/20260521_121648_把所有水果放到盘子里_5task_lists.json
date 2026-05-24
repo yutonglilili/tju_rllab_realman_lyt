@@ -1,0 +1,7 @@
+[
+  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}],
+  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}],
+  [{"pick": "tennis ball", "place": "empty table area"}, {"pick": "orange", "place": "empty table area"}, {"pick": "banana", "place": "empty table area"}, {"pick": "yellow fruit", "place": "empty table area"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "orange", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}, {"pick": "yellow fruit", "place": "pink plate"}],
+  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}],
+  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}]
+]

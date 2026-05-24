@@ -21,28 +21,36 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # Global VLM Configuration
 # =========================================================
 
-# ER1.5
-BASE_URL = "http://172.28.102.11:22002/v1"
-API_KEY = "EMPTY"
-MODEL_NAME = "Embodied-R1.5-SFT-0128"
+def _load_default_headers():
+    """Load optional gateway headers from env, e.g. VLM_DEFAULT_HEADERS='{\"x-foo\":\"true\"}'."""
+    raw_headers = os.getenv("VLM_DEFAULT_HEADERS", "").strip()
+    if not raw_headers:
+        return None
 
-"""
-# Qwen3-VL
-BASE_URL = "http://172.28.102.11:22014/v1"
-API_KEY = "EMPTY"
-MODEL_NAME = "Qwen3-VL-8B-Instruct"
-"""
-"""
-# Qwen3.6-35B-A3B
-BASE_URL = "http://172.28.102.11:22002/v1"
-API_KEY = "EMPTY"
-MODEL_NAME = "Qwen3.6-35B-A3B"
-""""""
-# Qwen3-VL
-BASE_URL = "http://172.28.102.11:22003/v1"
-API_KEY = "EMPTY"
-MODEL_NAME = "Qwen3.6-27B"
-"""
+    try:
+        headers = json.loads(raw_headers)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "VLM_DEFAULT_HEADERS must be a valid JSON object string, "
+            'for example: {"x-foo":"true"}'
+        ) from exc
+
+    if not isinstance(headers, dict):
+        raise ValueError("VLM_DEFAULT_HEADERS must decode to a JSON object")
+
+    return {str(key): str(value) for key, value in headers.items()}
+
+
+# OpenAI-compatible gateway configuration.
+# You can either edit the three values below directly, or override them with env vars:
+#   $env:VLM_BASE_URL = "https://api.gpt.ge/v1/"
+#   $env:VLM_API_KEY = "your_api_key"
+#   $env:VLM_MODEL_NAME = "gpt-4.1-mini"
+#   $env:VLM_DEFAULT_HEADERS = '{"x-foo":"true"}'
+BASE_URL = os.getenv("VLM_BASE_URL", "https://api.gpt.ge/v1")
+API_KEY = os.getenv("VLM_API_KEY", "sk-mZKUlpAwtBBQKHg5B5F62eFe2dE94394A61aF79aCeE68c44")
+MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gpt-5.5")
+DEFAULT_HEADERS = _load_default_headers()
 
 TMP_IMAGE_PATH = "tmp_vlm_image.png"
 
@@ -57,7 +65,8 @@ def get_vlm_client():
         _global_client = VLLMOnlineClient(
             base_url=BASE_URL,
             api_key=API_KEY,
-            model_name=MODEL_NAME
+            model_name=MODEL_NAME,
+            default_headers=DEFAULT_HEADERS,
         )
 
     return _global_client
@@ -741,6 +750,241 @@ def parse_roast_with_timer(instruction: str):
 
     return tasks, rotate_angle
 
+# 能根据指令和观测拆出所有的子任务。
+def generate_air_fryer_subtasks(image_rgb, instruction):
+
+    client = get_vlm_client()
+
+    img_path = save_image_tmp(image_rgb)
+
+    # ---------------------------------
+    # Prompt
+    # ---------------------------------
+
+    prompt = f"""
+    You are a robot task planner for a kitchen robot.
+
+    You are given:
+    1. A kitchen RGB image
+    2. A human instruction
+
+    Your job:
+    - Understand the instruction
+    - Analyze the current scene
+    - Infer environment states
+    - Generate the minimal required robot subtasks
+
+    ==================================================
+    AVAILABLE SKILLS
+    ==================================================
+
+    Skill 0:
+    open_container
+
+    Args:
+    {{
+        "target": str
+    }}
+
+    --------------------------------------------------
+
+    Skill 1:
+    close_container
+
+    Args:
+    {{
+        "target": str
+    }}
+
+    --------------------------------------------------
+
+    Skill 2:
+    pick_and_place
+
+    Args:
+    {{
+        "pick": str,
+        "place": str
+    }}
+
+    Motion Context:
+    {{
+        "pick_context": str,
+        "place_context": str
+    }}
+
+    Allowed motion contexts:
+    - normal
+    - inside_air_fryer
+
+    Use inside_air_fryer when manipulating objects inside the air fryer basket or drawer.
+
+    --------------------------------------------------
+
+    Skill 3:
+    set_timer
+
+    Args:
+    {{
+        "minutes": int
+    }}
+
+    ==================================================
+    PLANNING RULES
+    ==================================================
+
+    1. First infer whether the air fryer drawer is:
+        - open
+        - closed
+
+    2. Only generate necessary actions.
+
+    3. If the drawer is already open:
+        - do NOT generate Skill 0
+
+    4. If the drawer is closed and the task requires interacting with food inside the air fryer:
+        - first generate Skill 0
+
+    5. Before setting timer:
+        - drawer must be closed
+
+    6. Multiple food items require multiple pick_and_place actions.
+
+    7. Visible objects in the image should be preferred for manipulation.
+
+    8. If a food item mentioned in the instruction is not visible, you may assume it is already inside the air fryer basket unless the image clearly indicates otherwise.
+
+    9. Use this assumption to continue planning normally according to the user instruction.
+
+    10. Do NOT assume the task is already completed unless the image clearly shows the instruction has already been satisfied.
+
+    11. Output subtasks in execution order.
+
+    12. Output JSON ONLY.
+
+    13. Do NOT output explanations.
+
+    ==================================================
+    USER INSTRUCTION
+    ==================================================
+
+    {instruction}
+
+    ==================================================
+    OUTPUT FORMAT
+    ==================================================
+
+    {{
+        "subtasks": [
+            {{
+                "skill": 0,
+                "args": {{
+                    "target": "air fryer drawer"
+                }}
+            }},
+            {{
+                "skill": 2,
+                "args": {{
+                    "pick": "sweet potato",
+                    "place": "air fryer basket"
+                }},
+                "motion": {{
+                    "pick_context": "normal",
+                    "place_context": "inside_air_fryer"
+                }}
+            }},
+            {{
+                "skill": 1,
+                "args": {{
+                    "target": "air fryer drawer"
+                }}
+            }},
+            {{
+                "skill": 3,
+                "args": {{
+                    "minutes": 30
+                }}
+            }}
+        ]
+    }}
+
+    If the instruction is already satisfied:
+
+    {{
+        "subtasks": []
+    }}
+    """
+
+    # ---------------------------------
+    # 构建 VLM 输入
+    # ---------------------------------
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    # ---------------------------------
+    # 调用模型
+    # ---------------------------------
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    # ---------------------------------
+    # JSON 提取
+    # ---------------------------------
+
+    data = extract_first_json(content)
+
+    # ---------------------------------
+    # 结构清洗
+    # ---------------------------------
+
+    if not isinstance(data, dict):
+        return []
+
+    subtasks = data.get("subtasks", [])
+
+    if not isinstance(subtasks, list):
+        return []
+
+    parsed_subtasks = []
+
+    for task in subtasks:
+
+        if not isinstance(task, dict):
+            continue
+
+        skill = task.get("skill", None)
+        args = task.get("args", {})
+        motion = task.get("motion", {})
+
+        if skill is None:
+            continue
+
+        try:
+            parsed_subtasks.append({
+                "skill": int(skill),
+                "args": args if isinstance(args, dict) else {},
+                "motion": motion if isinstance(motion, dict) else {}
+            })
+        except:
+            continue
+
+    return parsed_subtasks
 
 # =========================================================
 # 调用模型打点
@@ -797,23 +1041,26 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
     # Build messages for this test case
     messages = client.prepare_messages_from_test_case(test_case)
 
-    # Generate output
-    # Use mm_processor_kwargs for video processing (safe to use)
-    # Note: Do NOT add top_k, repetition_penalty, presence_penalty - they cause crashes
-    response = client.client.chat.completions.create(
-        model=client.model_name,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        seed=seed,
-        extra_body={
+    request_kwargs = {
+        "model": client.model_name,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "seed": seed,
+    }
+
+    # Some OpenAI-compatible gateways reject vLLM-specific extra_body fields.
+    # Keep this opt-in for compatibility with proxy platforms.
+    if os.getenv("VLM_ENABLE_MM_PROCESSOR_KWARGS", "").strip().lower() in {"1", "true", "yes"}:
+        request_kwargs["extra_body"] = {
             "mm_processor_kwargs": {
                 "fps": video_fps,
                 "do_sample_frames": video_do_sample_frames
             }
         }
-    )
+
+    response = client.client.chat.completions.create(**request_kwargs)
     generated_text = response.choices[0].message.content
 
     import numpy as np
@@ -1444,29 +1691,100 @@ def generate_tasks_with_descriptions(image_rgb, instruction):
         {{"pick": "...", "place": "..."}},
         {{"pick": "...", "place": "..."}}
         ]
+    """
+
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    response = client.client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    data = extract_first_json(content)
+
+    tasks = _normalize_task_list(data)
+
+    # -----------------------------
+    # 后处理（关键增强）
+    # -----------------------------
+    cleaned_tasks = []
+    for t in tasks:
+        pick = t.get("pick", "").strip()
+        place = t.get("place", "").strip()
+
+        if pick and place:
+            cleaned_tasks.append({
+                "pick": pick,
+                "place": place
+            })
+
+    if not cleaned_tasks:
+        print("⚠️ No task detected")
+
+    return cleaned_tasks
+
+# 生成带方位描述的，并能解决遮挡覆盖的 pnp 序列
+def generate_tasks_with_descriptions_with_obstruction_reasoning(image_rgb, instruction):
+
+    client = get_vlm_client()
+    img_path = save_image_tmp(image_rgb)
+
+    prompt = f"""
+        You are a household robot.
+
+        Convert the instruction into a sequence of pick-and-place tasks.
+
+        Instruction:
+        {instruction}
+
+        Reasoning rules:
+        - A target object may be blocked, covered, or stacked under another object.
+        - If an object must be moved first to access the target, generate extra tasks before the final task.
+        - Move blocking objects to a nearby empty area temporarily.
+        - Plan tasks in the correct execution order.
+        - Each task must contain exactly:
+        - one pick object
+        - one place location
+        - Use short natural phrases only.
+        - Do not explain reasoning.
+        - Output only the JSON list.
 
         Examples:
 
-        Instruction: put the ball on the right of the cube
+        Instruction:
+        "Put the phone in the drawer."
+
+        If the phone is covered by a book:
         [
-        {{"pick": "ball", "place": "right of cube"}}
+        {{"pick": "book", "place": "empty table area"}},
+        {{"pick": "phone", "place": "drawer"}}
         ]
 
-        Instruction: put all balls into the basket
+        Instruction:
+        "Put the apple into the bowl."
+
+        If the apple is already reachable:
         [
-        {{"pick": "red ball", "place": "inside basket"}},
-        {{"pick": "blue ball", "place": "inside basket"}}
+        {{"pick": "apple", "place": "bowl"}}
         ]
 
-        Instruction: put toys into the white plate
+        Output format:
         [
-        {{"pick": "toy horse", "place": "inside white plate"}},
-        {{"pick": "teddy bear", "place": "inside white plate"}}
-        ]
-
-        Instruction: put the ball between the cup and the plate
-        [
-        {{"pick": "ball", "place": "between cup and plate"}}
+        {{"pick": "...", "place": "..."}}
         ]
     """
 
@@ -1578,4 +1896,3 @@ def check_instruction_complete(image_rgb, instruction):
     data = extract_first_json(content)
 
     return _normalize_completion_result(data)
-

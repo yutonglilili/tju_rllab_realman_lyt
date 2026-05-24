@@ -1,0 +1,7 @@
+[
+  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "烤苹果", "place": "盘子"}}, {"skill": 2, "args": {"pick": "香蕉", "place": "盘子"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}],
+  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "plate"}}, {"skill": 2, "args": {"pick": "banana", "place": "plate"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}],
+  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "烤苹果", "place": "盘子"}}, {"skill": 2, "args": {"pick": "香蕉", "place": "盘子"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}],
+  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "烤苹果", "place": "盘子"}}, {"skill": 2, "args": {"pick": "香蕉", "place": "盘子"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}],
+  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "plate"}}, {"skill": 2, "args": {"pick": "banana", "place": "plate"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}]
+]
