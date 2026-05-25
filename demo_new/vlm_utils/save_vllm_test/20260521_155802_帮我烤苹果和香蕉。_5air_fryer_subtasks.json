@@ -1,7 +1,0 @@
-[
-  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "air fryer basket"}}, {"skill": 2, "args": {"pick": "banana", "place": "air fryer basket"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}],
-  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "air fryer basket"}}, {"skill": 2, "args": {"pick": "banana", "place": "air fryer basket"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}, {"skill": 3, "args": {"minutes": 30}}],
-  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "air fryer basket"}}, {"skill": 2, "args": {"pick": "banana", "place": "air fryer basket"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}, {"skill": 3, "args": {"minutes": 30}}],
-  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "air fryer basket"}}, {"skill": 2, "args": {"pick": "banana", "place": "air fryer basket"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}, {"skill": 3, "args": {"minutes": 30}}],
-  [{"skill": 0, "args": {"target": "air fryer drawer"}}, {"skill": 2, "args": {"pick": "apple", "place": "air fryer basket"}}, {"skill": 2, "args": {"pick": "banana", "place": "air fryer basket"}}, {"skill": 1, "args": {"target": "air fryer drawer"}}, {"skill": 3, "args": {"minutes": 30}}]
-]

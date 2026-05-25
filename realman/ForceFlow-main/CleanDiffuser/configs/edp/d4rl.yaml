@@ -1,0 +1,31 @@
+defaults:
+- _self_
+- task: halfcheetah-medium-expert-v2
+
+pipeline_name: edp_d4rl   # training -> inference
+mode: training
+seed: 0
+device_id: 0
+
+# Actor
+solver: ddpm
+sampling_steps: 5
+
+# Training
+training_steps: 1000000
+ema_update_interval: 5
+log_interval: 1000
+save_interval: 200000
+
+# Inference
+ckpt: 1000000
+num_envs: 50
+num_episodes: 3
+num_candidates: 50
+temperature: 0.5
+use_ema: True
+
+# hydra
+hydra:
+  job:
+    chdir: false

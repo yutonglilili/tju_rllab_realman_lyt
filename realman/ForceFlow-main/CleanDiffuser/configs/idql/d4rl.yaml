@@ -1,0 +1,31 @@
+defaults:
+  - _self_
+  - task: halfcheetah-medium-expert-v2
+
+pipeline_name: idql_d4rl
+device_id: 0
+mode: bc_training  # bc_training -> iql_training (optional) -> inference
+seed: 0
+
+# Environment
+normalize_reward: True
+
+# Training
+bc_training_steps: 1000000
+iql_training_steps: 1000000
+save_interval: 200000
+
+# Inference
+bc_ckpt: 1000000
+iql_ckpt: 1000000
+solver: ddpm
+iql_from_pretrain: False  # Must be False for now! We will fix this later.
+sampling_steps: 5
+num_envs: 50
+num_episodes: 3
+num_candidates: 256
+
+# hydra
+hydra:
+  job:
+    chdir: false

@@ -1,7 +1,0 @@
-[
-  [{"pick": "tennis ball", "place": "empty table area"}, {"pick": "orange", "place": "empty table area"}, {"pick": "red horse toy", "place": "empty table area"}, {"pick": "banana", "place": "blue plate"}, {"pick": "lemon", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "orange", "place": "blue plate"}],
-  [{"pick": "red horse toy", "place": "empty table area"}, {"pick": "yellow lemon", "place": "blue plate"}, {"pick": "banana", "place": "blue plate"}, {"pick": "orange tomato", "place": "blue plate"}],
-  [{"pick": "yellow lemon", "place": "blue plate"}, {"pick": "banana", "place": "blue plate"}, {"pick": "orange", "place": "blue plate"}],
-  [{"pick": "red toy horse", "place": "empty table area"}, {"pick": "yellow lemon", "place": "blue plate"}, {"pick": "banana", "place": "blue plate"}, {"pick": "orange tomato", "place": "blue plate"}],
-  [{"pick": "yellow lemon", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}, {"pick": "orange tomato", "place": "blue plate"}, {"pick": "tennis ball", "place": "pink plate"}]
-]

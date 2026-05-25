@@ -1,0 +1,50 @@
+[
+  [
+    {
+      "skill": 1,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 3,
+      "args": {
+        "minutes": 20
+      },
+      "motion": {}
+    }
+  ],
+  [
+    {
+      "skill": 1,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 3,
+      "args": {
+        "minutes": 20
+      },
+      "motion": {}
+    }
+  ],
+  [
+    {
+      "skill": 1,
+      "args": {
+        "target": "air fryer drawer"
+      },
+      "motion": {}
+    },
+    {
+      "skill": 3,
+      "args": {
+        "minutes": 20
+      },
+      "motion": {}
+    }
+  ]
+]

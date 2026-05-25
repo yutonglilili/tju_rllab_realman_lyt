@@ -1,5 +1,5 @@
 """
-VLM inference utilities for robot manipulation.
+目前此函数库只开放调用模型打点的函数。模型是 ER1.5。
 """
 import json
 import re
@@ -22,9 +22,9 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # =========================================================
 
 # ER1.5
-BASE_URL = "http://172.28.102.11:22002/v1"
+BASE_URL = "http://172.28.102.11:22223/v1"
 API_KEY = "EMPTY"
-MODEL_NAME = "Embodied-R1.5-SFT-0128"
+MODEL_NAME = "Embodied-R1.5-SFT"
 
 """
 # Qwen3-VL
@@ -523,6 +523,93 @@ def _extract_points_by_regex(text: str) -> List[List[float]]:
 
 
 # =========================================================
+# 调用模型打点
+# =========================================================
+def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path="debug_pointing_vllm.png", color=(0, 0, 255)):
+    # Sampling parameters
+    greedy = False
+    seed = 3407
+    top_p = 0.8
+    top_k = 20
+    temperature = 0.7
+    repetition_penalty = 1.0
+    presence_penalty = 1.5
+    max_tokens = 4096  # out_seq_length
+
+    # Video processing parameters (for mm_processor_kwargs)
+    video_fps = 2  # Frames per second for video sampling
+    video_do_sample_frames = True  # Enable frame sampling
+
+    # Initialize client
+    client = get_vlm_client()
+
+    height, width = image_rgb.shape[:2]
+
+    tmp_image_path = "vllm_image.png"
+
+    Image.fromarray(image_rgb).save(tmp_image_path)
+    
+    test_case = {
+    'idx': 2,
+    'answer': '',
+    'prompt': f"""
+        Provide ONE 2D point for: {text_prompt}
+
+        Rules:
+            Output JSON only: [{{"point_2d":[x,y]}}]
+            x,y must be in [0,1000]
+
+        If the target is a container:
+            The point MUST be inside the container
+            The point MUST NOT be on any object inside the container
+            The point MUST NOT be on the eage of the container
+            Prefer a position near the center of the container
+        If the target is a normal object:
+            Choose a point near the top-center of the object
+            Avoid edges of the object
+        Return JSON only.
+    """,
+    'image': tmp_image_path,
+    'video': '',
+    'type': 'single_image'
+    }
+
+    # Build messages for this test case
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    # Generate output
+    # Use mm_processor_kwargs for video processing (safe to use)
+    # Note: Do NOT add top_k, repetition_penalty, presence_penalty - they cause crashes
+    response = client.client.chat.completions.create(
+        model=client.model_name,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        seed=seed,
+        extra_body={
+            "mm_processor_kwargs": {
+                "fps": video_fps,
+                "do_sample_frames": video_do_sample_frames
+            }
+        }
+    )
+    generated_text = response.choices[0].message.content
+
+    import numpy as np
+
+    pointing = (np.array(omni_decode_points(generated_text)) / 1000 * np.array([width, height]))[0]
+
+    if save_path:
+        img = cv2.imread(test_case["image"])
+        img = cv2.circle(img, (int(pointing[0]), int(pointing[1])), 5, color, -1)
+        cv2.imwrite(save_path, img)
+
+    return pointing # x, y following opencv camera coord
+
+
+'''
+# =========================================================
 # 调用模型解析多步抓取和放置任务（只适用于明确指令）
 # =========================================================
 def parse_multi_pick_place_tasks(text_prompt):
@@ -742,90 +829,6 @@ def parse_roast_with_timer(instruction: str):
     return tasks, rotate_angle
 
 
-# =========================================================
-# 调用模型打点
-# =========================================================
-def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path="debug_pointing_vllm.png", color=(0, 0, 255)):
-    # Sampling parameters
-    greedy = False
-    seed = 3407
-    top_p = 0.8
-    top_k = 20
-    temperature = 0.7
-    repetition_penalty = 1.0
-    presence_penalty = 1.5
-    max_tokens = 4096  # out_seq_length
-
-    # Video processing parameters (for mm_processor_kwargs)
-    video_fps = 2  # Frames per second for video sampling
-    video_do_sample_frames = True  # Enable frame sampling
-
-    # Initialize client
-    client = get_vlm_client()
-
-    height, width = image_rgb.shape[:2]
-
-    tmp_image_path = "vllm_image.png"
-
-    Image.fromarray(image_rgb).save(tmp_image_path)
-    
-    test_case = {
-    'idx': 2,
-    'answer': '',
-    'prompt': f"""
-        Provide ONE 2D point for: {text_prompt}
-
-        Rules:
-            Output JSON only: [{{"point_2d":[x,y]}}]
-            x,y must be in [0,1000]
-
-        If the target is a container:
-            The point MUST be inside the container
-            The point MUST NOT be on any object inside the container
-            The point MUST NOT be on the eage of the container
-            Prefer a position near the center of the container
-        If the target is a normal object:
-            Choose a point near the top-center of the object
-            Avoid edges of the object
-        Return JSON only.
-    """,
-    'image': tmp_image_path,
-    'video': '',
-    'type': 'single_image'
-    }
-
-    # Build messages for this test case
-    messages = client.prepare_messages_from_test_case(test_case)
-
-    # Generate output
-    # Use mm_processor_kwargs for video processing (safe to use)
-    # Note: Do NOT add top_k, repetition_penalty, presence_penalty - they cause crashes
-    response = client.client.chat.completions.create(
-        model=client.model_name,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        seed=seed,
-        extra_body={
-            "mm_processor_kwargs": {
-                "fps": video_fps,
-                "do_sample_frames": video_do_sample_frames
-            }
-        }
-    )
-    generated_text = response.choices[0].message.content
-
-    import numpy as np
-
-    pointing = (np.array(omni_decode_points(generated_text)) / 1000 * np.array([width, height]))[0]
-
-    if save_path:
-        img = cv2.imread(test_case["image"])
-        img = cv2.circle(img, (int(pointing[0]), int(pointing[1])), 5, color, -1)
-        cv2.imwrite(save_path, img)
-
-    return pointing # x, y following opencv camera coord
 
 
 # =========================================================
@@ -1578,4 +1581,4 @@ def check_instruction_complete(image_rgb, instruction):
     data = extract_first_json(content)
 
     return _normalize_completion_result(data)
-
+'''

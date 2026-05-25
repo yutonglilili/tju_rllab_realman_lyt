@@ -28,8 +28,9 @@ from demo_new.skills.tools.config_utils import ConfigNamespace, load_config_with
 from demo_new.skills.tools.utils import make_lift_T, make_target_T, save_obs_image, crop_image_around_point
 
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
-    generate_tasks_from_scene_with_failure_reason,
     get_point_vllm,
+)
+from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import (
     check_grasp_success_vllm,
     check_place_success_vllm,
     generate_task_from_scene,

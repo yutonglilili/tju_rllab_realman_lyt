@@ -1,0 +1,26 @@
+defaults:
+  - _self_
+  - task: walker2d-medium-expert-v2
+
+pipeline_name: diffuser_d4rl
+mode: training  # training -> inference
+seed: 0
+
+# Training
+diffusion_training_steps: 1000000
+classifier_training_steps: 1000000
+save_interval: 200000
+
+# Inference
+device_id: 0  # only for inference
+ckpt: 1000000
+solver: ddpm
+sampling_steps: 10
+num_envs: 50
+num_episodes: 3
+num_candidates: 64
+
+# hydra
+hydra:
+  job:
+    chdir: false

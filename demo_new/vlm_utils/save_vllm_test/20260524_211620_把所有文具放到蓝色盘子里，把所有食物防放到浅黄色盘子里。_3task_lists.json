@@ -1,0 +1,5 @@
+[
+  [{"pick": "black marker", "place": "inside blue plate"}, {"pick": "stapler", "place": "inside blue plate"}, {"pick": "eraser", "place": "inside blue plate"}, {"pick": "green box", "place": "inside blue plate"}, {"pick": "yellow tube", "place": "inside blue plate"}, {"pick": "black can", "place": "inside light yellow plate"}, {"pick": "green tin", "place": "inside light yellow plate"}, {"pick": "silver can", "place": "inside light yellow plate"}],
+  [{"pick": "stapler", "place": "inside blue plate"}, {"pick": "marker", "place": "inside blue plate"}, {"pick": "canned food", "place": "inside light yellow plate"}, {"pick": "yellow tube", "place": "inside light yellow plate"}, {"pick": "green box", "place": "inside light yellow plate"}, {"pick": "small packet", "place": "inside light yellow plate"}],
+  [{"pick": "marker", "place": "inside blue plate"}, {"pick": "stapler", "place": "inside blue plate"}, {"pick": "canned food", "place": "inside light yellow plate"}, {"pick": "yellow tube", "place": "inside light yellow plate"}, {"pick": "green box", "place": "inside light yellow plate"}, {"pick": "small red box", "place": "inside light yellow plate"}]
+]

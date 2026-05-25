@@ -1,82 +1,141 @@
 pnp_skill:
+
   # ═══════════════════════════════════════════════════
-  # 感知参数
+  # perception
   # ═══════════════════════════════════════════════════
-  PERCEPTION_INTERVAL: 0.3          # 打点频率(秒)，取决于 VLM 推理速度
-  TASK_DISCOVERY_INTERVAL: 2.0      # 没任务时监视频率
 
-  BUFFER_SIZE: 5                    # 移动检测缓冲区大小
-  TRIGGER_COUNT_THRESHOLD: 2        # 连续触发2次才认为目标移动
-  MOVE_OBJECT_THRESHOLD: 0.05       # pick 目标移动检测阈值(米，5cm)
-  MOVE_CONTAINER_THRESHOLD: 0.2     # place 目标移动检测阈值(米，20cm)
+  PERCEPTION_INTERVAL: 0.3
 
-  CAMERA_X_OFFSET: 0.01           # 修正相机标定x轴偏移(米)
-  CAMERA_Y_OFFSET: -0.02           # 修正相机标定y轴偏移(米)
-  CAMERA_Z_OFFSET: 0.0              # 修正相机标定z轴偏移(米)
+  TASK_DISCOVERY_INTERVAL: 2.0
 
-  PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)
-  PLACE_SUCCESS_DIST_THRESHOLD: 0.2 # 放置成功距离阈值(米)
+  BUFFER_SIZE: 5
 
-  # 保存图片目录
+  TRIGGER_COUNT_THRESHOLD: 2
+
+  MOVE_OBJECT_THRESHOLD: 0.05
+
+  MOVE_CONTAINER_THRESHOLD: 0.2
+
+  CAMERA_X_OFFSET: 0.01
+
+  CAMERA_Y_OFFSET: -0.02
+
+  CAMERA_Z_OFFSET: 0.0
+
+  PICK_SUCCESS_DIST_THRESHOLD: 0.1
+
+  PLACE_SUCCESS_DIST_THRESHOLD: 0.2
+
   SAVE_DIR: "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
 
   # ═══════════════════════════════════════════════════
-  # 规划参数
+  # trajectory
   # ═══════════════════════════════════════════════════
-  TRAJECTORY_DOWNSAMPLE: 2          # 轨迹降采样率
 
-  SAFE_HEIGHT: 0.06                 # 安全高度(米)
+  TRAJECTORY_DOWNSAMPLE: 2
 
-  # 设置固定 rpy, 如果为 null 则根据 xyz 计算角度
-  PICK_RPY: null
-  PLACE_RPY:
-    - 0.0623
-    - 0.4881
-    - 3.1218
-
-  # 根据 xyz 预设角度
-  RX_DEGREE_CLOSE: 10
-  RX_DEGREE_FAR_HIGH: 45
-  RX_DEGREE_FAR_LOW: 30
-
-  # pick 和 place 三阶段的位姿偏移
-  PRE_PICK_X_OFFSET: 0.0
-  PRE_PICK_Y_OFFSET: 0.04
-  PRE_PICK_Z_OFFSET: 0.08
-  PICK_X_OFFSET: 0.0
-  PICK_Y_OFFSET: 0.0
-  PICK_Z_OFFSET: 0.005
-  POST_PICK_X_OFFSET: 0.0
-  POST_PICK_Y_OFFSET: 0.04
-  POST_PICK_Z_OFFSET: 0.13
-  PRE_PLACE_X_OFFSET: 0.03
-  PRE_PLACE_Y_OFFSET: 0.0
-  PRE_PLACE_Z_OFFSET: 0.1
-  PLACE_X_OFFSET: 0.08
-  PLACE_Y_OFFSET: -0.03
-  PLACE_Z_OFFSET: 0.07
-  POST_PLACE_X_OFFSET: 0.03
-  POST_PLACE_Y_OFFSET: 0.0
-  POST_PLACE_Z_OFFSET: 0.08
+  SAFE_HEIGHT: 0.06
 
   # ═══════════════════════════════════════════════════
-  # 执行参数
+  # motion profiles
   # ═══════════════════════════════════════════════════
-  CONTROL_INTERVAL: 0.0              # 执行线程循环间隔（秒），sync 模式下 movep 本身阻塞，此值仅为防空转
 
-  GRIPPER_OPEN: 0.09                 # 夹爪张开程度
-  GRIPPER_CLOSE: 0.03                # 夹爪闭合程度   
+  motion_profiles:
 
-  # 连续运动失败（SyncController 抛 RuntimeError）达到此次数则放弃本段轨迹，触发 need_replan 重新规划
+    # -------------------------------------------------
+    # default profile
+    # -------------------------------------------------
+
+    normal:
+
+      PICK_RPY: null
+
+      PLACE_RPY: null
+
+      PRE_PICK_X_OFFSET: 0.0
+      PRE_PICK_Y_OFFSET: 0.04
+      PRE_PICK_Z_OFFSET: 0.08
+
+      PICK_X_OFFSET: 0.0
+      PICK_Y_OFFSET: 0.0
+      PICK_Z_OFFSET: 0.005
+
+      POST_PICK_X_OFFSET: 0.0
+      POST_PICK_Y_OFFSET: 0.04
+      POST_PICK_Z_OFFSET: 0.13
+
+      PRE_PLACE_X_OFFSET: 0.03
+      PRE_PLACE_Y_OFFSET: 0.0
+      PRE_PLACE_Z_OFFSET: 0.1
+
+      PLACE_X_OFFSET: 0.08
+      PLACE_Y_OFFSET: -0.03
+      PLACE_Z_OFFSET: 0.07
+
+      POST_PLACE_X_OFFSET: 0.03
+      POST_PLACE_Y_OFFSET: 0.0
+      POST_PLACE_Z_OFFSET: 0.08
+
+    # -------------------------------------------------
+    # air fryer profile
+    # -------------------------------------------------
+
+    inside_air_fryer:
+
+      PICK_RPY:
+        - 0.0623
+        - 0.4881
+        - 3.1218
+
+      PLACE_RPY:
+        - 0.0623
+        - 0.4881
+        - 3.1218
+
+      PRE_PICK_X_OFFSET: 0.02
+      PRE_PICK_Y_OFFSET: 0.00
+      PRE_PICK_Z_OFFSET: 0.14
+
+      PICK_X_OFFSET: 0.01
+      PICK_Y_OFFSET: -0.01
+      PICK_Z_OFFSET: 0.03
+
+      POST_PICK_X_OFFSET: 0.00
+      POST_PICK_Y_OFFSET: 0.00
+      POST_PICK_Z_OFFSET: 0.18
+
+      PRE_PLACE_X_OFFSET: 0.02
+      PRE_PLACE_Y_OFFSET: 0.00
+      PRE_PLACE_Z_OFFSET: 0.14
+
+      PLACE_X_OFFSET: 0.06
+      PLACE_Y_OFFSET: -0.02
+      PLACE_Z_OFFSET: 0.05
+
+      POST_PLACE_X_OFFSET: 0.00
+      POST_PLACE_Y_OFFSET: 0.00
+      POST_PLACE_Z_OFFSET: 0.18
+
+  # ═══════════════════════════════════════════════════
+  # execution
+  # ═══════════════════════════════════════════════════
+
+  CONTROL_INTERVAL: 0.0
+
+  GRIPPER_OPEN: 0.09
+
+  GRIPPER_CLOSE: 0.03
+
   MAX_CONSECUTIVE_MOTION_FAILURES: 5
 
-  MAX_PICK_RETRIES: 5                # pick 阶段最大重试次数
-  MAX_PLACE_RETRIES: 5               # place 阶段最大重试次数
+  MAX_PICK_RETRIES: 5
 
-  # 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
+  MAX_PLACE_RETRIES: 5
+
   CHECK_PICK_SUCCESS_MODE: 1
+
   CHECK_PLACE_SUCCESS_MODE: 1
 
-  # 检测裁剪区域大小
   CHECK_PICK_CROP_SIZE: 560
+
   CHECK_PLACE_CROP_SIZE: 640

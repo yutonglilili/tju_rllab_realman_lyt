@@ -1,7 +1,0 @@
-[
-  [{"pick": "橙子", "place": "蓝色盘子"}, {"pick": "网球", "place": "蓝色盘子"}, {"pick": "香蕉", "place": "粉色盘子"}],
-  [{"pick": "orange", "place": "blue plate"}, {"pick": "yellow fruit", "place": "blue plate"}, {"pick": "green tennis ball", "place": "blue plate"}],
-  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}],
-  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}],
-  [{"pick": "orange", "place": "blue plate"}, {"pick": "tennis ball", "place": "blue plate"}, {"pick": "banana", "place": "pink plate"}, {"pick": "yellow fruit", "place": "blue plate"}]
-]

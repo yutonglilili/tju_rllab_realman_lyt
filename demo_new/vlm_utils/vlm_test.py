@@ -11,18 +11,22 @@ import numpy as np
 from PIL import Image
 import cv2
 
-# from multi_pointing_vllm_get_point_utils import *
-from vllm_from_api_key import *
+from multi_pointing_vllm_get_point_utils_qwen import *
+# from vllm_from_api_key import *
 
 
 # 配置
-IMAGE_PATH = "/home/zhangzhao/lyt/00005.png"
+IMAGE_PATH = "/home/zhangzhao/lyt/文具和食物.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/水果和玩具plus.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/方位.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/带遮挡.png"
+# IMAGE_PATH = "/home/zhangzhao/lyt/00004.png"
 # INSTRUCTION = "把魔方放到盘子里。"
 # INSTRUCTION = "帮我把烤苹果和香蕉,定时20分钟。"
-INSTRUCTION = "帮我把苹果和香蕉从空气炸锅里取出来放到盘子上。"
+# INSTRUCTION = "帮我把苹果和香蕉从空气炸锅里取出来放到盘子上。"
+# INSTRUCTION = "橘子和魔方的中间"
+INSTRUCTION = "把所有文具放到蓝色盘子里，把所有食物放到浅黄色盘子里。"
+
 NUM_SAMPLES = 3
 
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save_vllm_test")
@@ -232,13 +236,9 @@ def test_generate_tasks_with_descriptions(instruction, image_path, save_dir, num
     print("\nSaved to:", save_path)
     print("\n========== DONE ==========\n")
 
+
 # 给定指令和图像路径，测试空气炸锅子任务生成。
-def test_generate_air_fryer_subtasks(
-    instruction,
-    image_path,
-    save_dir,
-    num_samples,
-):
+def test_generate_air_fryer_subtasks(instruction, image_path, save_dir, num_samples,):
 
     print("\n========== AIR FRYER SUBTASK TEST ==========\n")
 
@@ -305,6 +305,6 @@ def test_generate_air_fryer_subtasks(
     print("\n========== DONE ==========\n")
 
 if __name__ == "__main__":
-    # test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     # test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
-    test_generate_air_fryer_subtasks(INSTRUCTION,IMAGE_PATH,SAVE_DIR,NUM_SAMPLES)
+    # test_generate_air_fryer_subtasks(INSTRUCTION,IMAGE_PATH,SAVE_DIR,NUM_SAMPLES)
