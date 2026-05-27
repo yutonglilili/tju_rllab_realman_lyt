@@ -16,7 +16,7 @@ from multi_pointing_vllm_get_point_utils_qwen import *
 
 
 # 配置
-IMAGE_PATH = "/home/zhangzhao/lyt/文具和食物.png"
+# IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/文具和水果.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/水果和玩具plus.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/方位.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/带遮挡.png"
@@ -25,9 +25,14 @@ IMAGE_PATH = "/home/zhangzhao/lyt/文具和食物.png"
 # INSTRUCTION = "帮我把烤苹果和香蕉,定时20分钟。"
 # INSTRUCTION = "帮我把苹果和香蕉从空气炸锅里取出来放到盘子上。"
 # INSTRUCTION = "橘子和魔方的中间"
-INSTRUCTION = "把所有文具放到蓝色盘子里，把所有食物放到浅黄色盘子里。"
+# INSTRUCTION = "把所有文具放到蓝色盘子里，把所有水果放到浅黄色盘子里。"
+# INSTRUCTION = "把和罐头放到蓝色盘子里。"
 
-NUM_SAMPLES = 3
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/放橡皮1.png"
+TEST_OBJECT_NAME = "eraser"
+TEST_CONTAINER_NAME = "blue plate"
+
+NUM_SAMPLES = 5
 
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save_vllm_test")
 
@@ -207,10 +212,8 @@ def test_generate_tasks_with_descriptions(instruction, image_path, save_dir, num
     for i in range(num_samples):
         print(f"[{i+1}/{num_samples}] Generating tasks...")
 
-        tasks = generate_tasks_with_descriptions(
-            image_rgb=image_rgb,
-            instruction=instruction,
-        )
+        tasks = generate_tasks_with_descriptions(image_rgb=image_rgb,instruction=instruction)
+
 
         if not tasks:
             tasks = []
@@ -304,7 +307,113 @@ def test_generate_air_fryer_subtasks(instruction, image_path, save_dir, num_samp
 
     print("\n========== DONE ==========\n")
 
+
+# 测试抓取是否成功检测函数
+def test_check_grasp_success_vllm_multiple(object_name, image_path, save_dir, num_samples):
+    print("\n========== VLM GRASP SUCCESS TEST ==========\n")
+
+    print("Image:", image_path)
+    print("Object:", object_name)
+    print("Num samples:", num_samples)
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    image_rgb = load_image(image_path)
+    results = []
+
+    for i in range(num_samples):
+        print(f"[{i+1}/{num_samples}] Checking grasp success...")
+
+        grasp_success = bool(
+            check_grasp_success_vllm(
+                image_rgb=image_rgb,
+                object_name=object_name,
+            )
+        )
+
+        sample_result = {
+            "sample_index": i + 1,
+            "grasp_success": grasp_success,
+        }
+        results.append(sample_result)
+        print(json.dumps(sample_result, ensure_ascii=False))
+
+    summary = {
+        "image_path": image_path,
+        "object_name": object_name,
+        "num_samples": num_samples,
+        "true_count": sum(item["grasp_success"] for item in results),
+        "results": results,
+    }
+
+    save_path = _build_test_save_path(
+        save_dir=save_dir,
+        instruction=object_name,
+        suffix=f"{num_samples}grasp_success.json",
+    )
+
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nSaved to:", save_path)
+    print("\n========== DONE ==========\n")
+
+
+def test_check_place_success_vllm_multiple(object_name, container_name, image_path, save_dir, num_samples):
+    print("\n========== VLM PLACE SUCCESS TEST ==========\n")
+
+    print("Image:", image_path)
+    print("Object:", object_name)
+    print("Container:", container_name)
+    print("Num samples:", num_samples)
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    image_rgb = load_image(image_path)
+    results = []
+
+    for i in range(num_samples):
+        print(f"[{i+1}/{num_samples}] Checking place success...")
+
+        place_success = bool(
+            check_place_success_vllm(
+                image_rgb=image_rgb,
+                object_name=object_name,
+                container_name=container_name,
+            )
+        )
+
+        sample_result = {
+            "sample_index": i + 1,
+            "place_success": place_success,
+        }
+        results.append(sample_result)
+        print(json.dumps(sample_result, ensure_ascii=False))
+
+    summary = {
+        "image_path": image_path,
+        "object_name": object_name,
+        "container_name": container_name,
+        "num_samples": num_samples,
+        "true_count": sum(item["place_success"] for item in results),
+        "results": results,
+    }
+
+    save_path = _build_test_save_path(
+        save_dir=save_dir,
+        instruction=f"{object_name}_{container_name}",
+        suffix=f"{num_samples}place_success.json",
+    )
+
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print("\nSaved to:", save_path)
+    print("\n========== DONE ==========\n")
+
 if __name__ == "__main__":
-    test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    # test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     # test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     # test_generate_air_fryer_subtasks(INSTRUCTION,IMAGE_PATH,SAVE_DIR,NUM_SAMPLES)
+    # test_check_grasp_success_vllm_multiple(TEST_OBJECT_NAME, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    test_check_place_success_vllm_multiple(TEST_OBJECT_NAME, TEST_CONTAINER_NAME, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)

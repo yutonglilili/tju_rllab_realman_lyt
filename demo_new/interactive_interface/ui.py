@@ -57,7 +57,7 @@ def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, 
                 )
                 cam_results_path_input = gr.Textbox(
                     label="Camera Results Path",
-                    value="/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json",
+                    value="/home/lyt/tju_rllab_realman_lyt/camera/20260325_031804/camera_results.json",
                 )
 
             with gr.Row():

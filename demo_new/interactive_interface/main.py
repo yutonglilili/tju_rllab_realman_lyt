@@ -174,8 +174,7 @@ def build_demo() -> Any:
                 components["current_status_output"],
                 components["recent_actions_output"],
             ],
-            api_name=False,
-            show_api=False,
+            api_name=False
         )
 
         components["init_runtime_button"].click(
@@ -195,8 +194,7 @@ def build_demo() -> Any:
                 components["recent_actions_output"],
                 components["camera_image_output"],
             ],
-            api_name=False,
-            show_api=False,
+            api_name=False
         )
 
         components["start_button"].click(
@@ -220,8 +218,7 @@ def build_demo() -> Any:
                 components["recent_actions_output"],
                 components["camera_image_output"],
             ],
-            api_name=False,
-            show_api=False,
+            api_name=False
         )
 
         components["stop_button"].click(
@@ -231,8 +228,7 @@ def build_demo() -> Any:
                 components["recent_actions_output"],
                 components["camera_image_output"],
             ],
-            api_name=False,
-            show_api=False,
+            api_name=False
         )
 
         demo.load(
@@ -242,8 +238,7 @@ def build_demo() -> Any:
                 components["recent_actions_output"],
                 components["camera_image_output"],
             ],
-            api_name=False,
-            show_api=False,
+            api_name=False
         )
 
         demo.load(
@@ -254,8 +249,7 @@ def build_demo() -> Any:
                 components["camera_image_output"],
             ],
             every=0.5,
-            api_name=False,
-            show_api=False,
+            api_name=False
         )
 
     return demo

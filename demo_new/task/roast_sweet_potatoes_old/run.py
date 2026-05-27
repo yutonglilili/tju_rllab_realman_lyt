@@ -101,7 +101,7 @@ def main():
 
     rs_env = Open3dRealsenseEnv("f1471338")
 
-    cam_results_path = "/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json"
+    cam_results_path = "/home/lyt/camera/20260325_031804/camera_results.json"
     with open(cam_results_path, "r") as f:
         cam_results = json.load(f)
 

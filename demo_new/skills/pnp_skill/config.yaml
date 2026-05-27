@@ -19,7 +19,7 @@ PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)
 PLACE_SUCCESS_DIST_THRESHOLD: 0.2 # 放置成功距离阈值(米)
 
 # 保存图片目录
-SAVE_DIR: "/home/zhangzhao/lyt/demo/pick_and_place/save_images/"
+SAVE_DIR: "/home/lyt/demo/pick_and_place/save_images/"
 
 # ═══════════════════════════════════════════════════
 # 规划参数

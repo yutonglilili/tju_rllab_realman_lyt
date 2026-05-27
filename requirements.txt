@@ -1,0 +1,35 @@
+# Realman + demo_new + realman/act_train
+# Use with: conda env create -f environment.yml
+#
+# Not included here:
+# - realman/ForceFlow-main
+# - realman/ForceFlow-main/CleanDiffuser
+#
+# Those two subprojects have another dependency stack and can conflict with
+# the main runtime environment used by realman/demo_new.
+#
+# Hardware / system drivers still need to be installed manually on the host:
+# - Intel RealSense driver / SDK
+# - 3Dconnexion SpaceMouse driver if your machine depends on it
+
+numpy==1.26.4
+opencv-python==4.11.0.86
+Pillow>=10,<11
+open3d>=0.18,<0.20
+pytransform3d==3.14.3
+
+openai>=1.30,<2
+gradio>=5,<6
+gradio-client>=1.9,<2
+
+zarr==2.16.1
+numcodecs>=0.12,<0.16
+pyspacemouse>=1.1.4,<2
+
+torch==2.2.2
+torchvision==0.17.2
+tqdm>=4.66,<5
+wandb>=0.24,<1
+lerobot>=0.4.4,<0.5
+
+robotic-arm>=1.1.5,<2

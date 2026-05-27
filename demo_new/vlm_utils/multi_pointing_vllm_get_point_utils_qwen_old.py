@@ -20,19 +20,18 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # =========================================================
 # Global VLM Configuration
 # =========================================================
-
+"""
 # ER1.5
 BASE_URL = "http://172.28.102.11:22223/v1"
 API_KEY = "EMPTY"
 MODEL_NAME = "Embodied-R1.5-SFT"
-
-
 """
+
+
 # Qwen3.6-35B-A3B
 BASE_URL = "http://172.28.102.11:22002/v1"
 API_KEY = "EMPTY"
 MODEL_NAME = "Qwen3.6-35B-A3B"
-"""
 
 """
 # Qwen3-VL
@@ -123,16 +122,6 @@ def _extract_message_text(message):
             return text
     return ""
 
-
-def _collect_message_text(message):
-    """Collect all non-empty text fields from a model message."""
-    parts = []
-    for attr in ("content", "text", "reasoning_content"):
-        text = _flatten_text_content(getattr(message, attr, None)).strip()
-        if text and text not in parts:
-            parts.append(text)
-    return "\n".join(parts)
-
 def _merge_extra_body(extra_body=None, disable_thinking=False):
     """Merge request extras while optionally disabling thinking output."""
     if extra_body is None:
@@ -215,47 +204,6 @@ def extract_first_json(text):
     print(cleaned)
 
     raise RuntimeError("Failed to extract valid JSON")
-
-
-def extract_first_json_or_none(text):
-    """Extract the first valid JSON-like payload, or return None."""
-    if not isinstance(text, str) or not text.strip():
-        return None
-
-    cleaned = re.sub(
-        r"```(?:json|python|text)?\s*(.*?)\s*```",
-        r"\1",
-        text.strip(),
-        flags=re.DOTALL | re.IGNORECASE,
-    ).strip()
-
-    parsed = _parse_json_candidate(cleaned)
-    if parsed is not None:
-        return parsed
-
-    for candidate in _iter_json_candidates(cleaned):
-        parsed = _parse_json_candidate(candidate.strip().rstrip(",;"))
-        if parsed is not None:
-            return parsed
-
-    return None
-
-
-def _read_success_flag(data, key):
-    data = _unwrap_single_item(data)
-
-    if not isinstance(data, dict) or key not in data:
-        return False
-
-    value = data[key]
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, str):
-        return value.strip().lower() == "true"
-
-    return False
 
 def _request_json_response(
     client,
@@ -718,9 +666,7 @@ def parse_multi_pick_place_tasks(text_prompt):
         temperature=0.2,
     )
 
-    content = _collect_message_text(response.choices[0].message)
-    data = extract_first_json_or_none(content)
-    return _read_success_flag(data, "grasp_success")
+    content = response.choices[0].message.content.strip()
 
     # =========================================================
     # Step 1: 去 markdown 包裹
@@ -871,7 +817,7 @@ def parse_roast_with_timer(instruction: str):
         client,
         [{"role": "user", "content": prompt}],
         model=MODEL_NAME,
-        max_tokens=512,
+        max_tokens=200,
         temperature=0.2,
     )
 
@@ -1181,7 +1127,7 @@ def get_point_vllm(image_rgb, text_prompt="you need to grasp the mug", save_path
         If the target is a normal object:
             Choose a point near the top-center of the object
             Avoid edges of the object
-        You may think step by step, but the final line must be exactly one JSON object.
+        Return JSON only.
     """,
     'image': tmp_image_path,
     'video': '',
@@ -1233,7 +1179,18 @@ def check_grasp_success_vllm(image_rgb, object_name):
     # 图像处理（关键）
     # =========================
 
-    tmp_image_path = save_image_tmp(image_rgb)
+    img = image_rgb.copy()
+
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+    img = np.ascontiguousarray(img)
+
+    tmp_image_path = "check_grasp_image.png"
+    Image.fromarray(img).save(tmp_image_path)
 
     # print("Saved grasp check image:", tmp_image_path)
 
@@ -1257,7 +1214,7 @@ def check_grasp_success_vllm(image_rgb, object_name):
         - The gripper is empty
         - The object is not inside the gripper
 
-        You may think step by step, but the final line must be exactly one JSON object.
+        Return JSON only.
 
         Example:
         {{
@@ -1279,13 +1236,11 @@ def check_grasp_success_vllm(image_rgb, object_name):
     response = client.client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
-        max_tokens=512,
+        max_tokens=200,
         temperature=0.2,
     )
 
-    content = _collect_message_text(response.choices[0].message)
-    data = extract_first_json_or_none(content)
-    return _read_success_flag(data, "grasp_success")
+    content = response.choices[0].message.content.strip()
 
     # print("[VLM grasp check raw output]")
     # print(content)
@@ -1324,7 +1279,18 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
     # 图像处理
     # =========================
 
-    tmp_image_path = save_image_tmp(image_rgb)
+    img = image_rgb.copy()
+
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+    img = np.ascontiguousarray(img)
+
+    tmp_image_path = "check_place_image.png"
+    Image.fromarray(img).save(tmp_image_path)
 
     # print("Saved place check image:", tmp_image_path)
 
@@ -1348,7 +1314,7 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
         FAILURE conditions:
         - The object is outside the container.
 
-        You may think step by step, but the final line must be exactly one JSON object.
+        Return JSON only.
 
         Example:
         {{
@@ -1370,13 +1336,11 @@ def check_place_success_vllm(image_rgb, object_name, container_name):
     response = client.client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
-        max_tokens=512,
+        max_tokens=200,
         temperature=0.2,
     )
 
-    content = _collect_message_text(response.choices[0].message)
-    data = extract_first_json_or_none(content)
-    return _read_success_flag(data, "place_success")
+    content = response.choices[0].message.content.strip()
 
     # =========================
     # 提取JSON
@@ -1907,7 +1871,7 @@ def check_instruction_complete(image_rgb, instruction):
         3. Mention the target container.
         4. If the instruction is satisfied, say:"all required objects are already in the correct place".
 
-        You may think step by step, but the final line must be exactly one JSON object.
+        Return JSON only.
 
         Format:
         {{

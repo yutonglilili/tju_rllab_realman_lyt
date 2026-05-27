@@ -197,7 +197,6 @@ class SharedState:
         self.point_changed = False
         self.is_first_point = True
         self.tracking_mode = False                  # 追踪模式
-        self.tracking_session_id = 0               # Invalidate in-flight tracking work across mode switches
         self.verify_mode = False                    # 验证模式
 
         # ===== 规划输出 =====
@@ -230,7 +229,6 @@ class SharedState:
             self.previous_point_3d = None
             self.point_changed = False
             self.is_first_point = True
-            self.tracking_session_id += 1
             self.tracking_mode = False
             self.verify_mode = False
 
@@ -244,22 +242,6 @@ class SharedState:
 
             self.task_done.clear()
             self.task_success = False
-
-
-def _set_tracking_mode_locked(state, enabled):
-    if state.tracking_mode != enabled:
-        state.tracking_session_id += 1
-    state.tracking_mode = enabled
-
-
-def _tracking_request_is_stale(state, tracking_session_id, task_phase, target_description):
-    with state.lock:
-        return (
-            (not state.tracking_mode)
-            or state.tracking_session_id != tracking_session_id
-            or state.task_phase != task_phase
-            or state.target_description != target_description
-        )
 
 
 # ═══════════════════════════════════════════════════
@@ -285,9 +267,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
             with state.lock:
                 target_description = state.target_description
                 task_phase = state.task_phase
-                tracking_session_id = state.tracking_session_id
                 if target_description is None:
-                    time.sleep(config.PERCEPTION_INTERVAL)
                     continue
 
             try:
@@ -296,26 +276,13 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                 image_rgb = obs["rgb"]
 
                 # double check tracking 状态(防止 post 阶段误打点)
-                if _tracking_request_is_stale(
-                    state,
-                    tracking_session_id,
-                    task_phase,
-                    target_description,
-                ):
-                    time.sleep(config.PERCEPTION_INTERVAL)
-                    continue
+                with state.lock:
+                    if not state.tracking_mode:
+                        time.sleep(config.PERCEPTION_INTERVAL)
+                        continue
 
                 # 调用 VLM 打点
                 point_2d = get_point_vllm(image_rgb, f"Point the {target_description}", save_path=None)
-
-                if _tracking_request_is_stale(
-                    state,
-                    tracking_session_id,
-                    task_phase,
-                    target_description,
-                ):
-                    time.sleep(config.PERCEPTION_INTERVAL)
-                    continue
 
                 # 保存打点图片
                 # save_check_image(image_rgb, point_2d, SAVE_DIR)
@@ -331,15 +298,6 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
 
                 # 更新共享状态 & 变化检测
                 with state.lock:
-                    if (
-                        (not state.tracking_mode)
-                        or state.tracking_session_id != tracking_session_id
-                        or state.task_phase != task_phase
-                        or state.target_description != target_description
-                    ):
-                        time.sleep(config.PERCEPTION_INTERVAL)
-                        continue
-
                     state.latest_point_2d = point_2d.copy()
                     state.latest_point_3d = target_xyz.copy()
                     state.latest_target_T = target_T.copy()
@@ -392,7 +350,7 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                         state.current_task = current_task
                         state.task_phase = TaskPhase.PLACE
                         state.target_description = current_task['place']
-                        _set_tracking_mode_locked(state, True)
+                        state.tracking_mode = True
                         state.verify_mode = False
                 
                 else:
@@ -413,9 +371,10 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                             state.previous_point_3d = None
                             state.point_changed = False
                             state.is_first_point = True
-                            _set_tracking_mode_locked(state, True)
+                            state.tracking_mode = True
                             state.verify_mode = False
                             state.attemp_count = attemp_count + 1
+                            
 
             elif task_phase == TaskPhase.PLACE:
                 
@@ -444,12 +403,9 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                             state.previous_point_3d = None
                             state.point_changed = False
                             state.is_first_point = True
-                            _set_tracking_mode_locked(state, True)
+                            state.tracking_mode = True
                             state.verify_mode = False
                             state.attemp_count = attemp_count + 1
-
-        else:
-            time.sleep(0.01)
 
     print("[感知线程] 已停止")
 
@@ -834,7 +790,7 @@ def execution_thread(state, env):
                 # 检查是否执行完毕
                 if state.action_index >= len(state.action_list):
                     state.plan_ready.clear()
-                    _set_tracking_mode_locked(state, False)
+                    state.tracking_mode = False
                     state.verify_mode = True   # 感知线程切换到验证模式
                     print("[执行] ✅ 动作序列执行完成")
                     break
@@ -871,10 +827,9 @@ def execution_thread(state, env):
                 break
 
             # post阶段感知线程空转，避免影响执行
-            # Only keep movement tracking alive during the approach leg.
-            if action["tag"] != 0:
+            if action["tag"] == 2:
                 with state.lock:
-                    _set_tracking_mode_locked(state, False)
+                    state.tracking_mode = False
                     state.verify_mode = False
 
             try:
@@ -959,7 +914,7 @@ def run_single_task(
     with state.lock:
         state.current_task = current_task
         state.task_phase = TaskPhase.PICK
-        _set_tracking_mode_locked(state, True)
+        state.tracking_mode = True
         state.target_description = task['pick']
 
     while not state.stop_all.is_set():
@@ -1016,7 +971,7 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
             # 这样在 reset 的阻塞时间内，感知线程已经在为下一个任务打点
             with state.lock:
                 state.task_phase = TaskPhase.PICK
-                _set_tracking_mode_locked(state, True)
+                state.tracking_mode = True
                 state.verify_mode = False
                 state.target_description = next_task['pick']
                 state.is_first_point = True
@@ -1298,7 +1253,7 @@ def main():
     # 左臂
     robot_ip = "192.168.101.19"
     camera_serial = "f1471338"
-    cam_results_path = "/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json"
+    cam_results_path = "/home/lyt/tju_rllab_realman_lyt/camera/20260325_031804/camera_results.json"
 
     # 指令
     instruction = "Pick the baseball and place it on the right side of the rubic's cube."

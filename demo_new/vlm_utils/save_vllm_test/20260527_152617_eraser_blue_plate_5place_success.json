@@ -1,0 +1,29 @@
+{
+  "image_path": "/home/lyt/tju_rllab_realman_lyt/放橡皮1.png",
+  "object_name": "eraser",
+  "container_name": "blue plate",
+  "num_samples": 5,
+  "true_count": 5,
+  "results": [
+    {
+      "sample_index": 1,
+      "place_success": true
+    },
+    {
+      "sample_index": 2,
+      "place_success": true
+    },
+    {
+      "sample_index": 3,
+      "place_success": true
+    },
+    {
+      "sample_index": 4,
+      "place_success": true
+    },
+    {
+      "sample_index": 5,
+      "place_success": true
+    }
+  ]
+}

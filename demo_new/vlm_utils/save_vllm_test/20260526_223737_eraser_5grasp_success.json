@@ -1,0 +1,28 @@
+{
+  "image_path": "/home/lyt/tju_rllab_realman_lyt/抓橡皮1.png",
+  "object_name": "eraser",
+  "num_samples": 5,
+  "true_count": 0,
+  "results": [
+    {
+      "sample_index": 1,
+      "grasp_success": false
+    },
+    {
+      "sample_index": 2,
+      "grasp_success": false
+    },
+    {
+      "sample_index": 3,
+      "grasp_success": false
+    },
+    {
+      "sample_index": 4,
+      "grasp_success": false
+    },
+    {
+      "sample_index": 5,
+      "grasp_success": false
+    }
+  ]
+}

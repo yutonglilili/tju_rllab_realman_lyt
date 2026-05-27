@@ -22,7 +22,7 @@ def main():
     # 左臂
     robot_ip = "192.168.101.19"
     camera_serial = "f1471338"
-    cam_results_path = "/home/zhangzhao/lyt/camera/20260325_031804/camera_results.json"
+    cam_results_path = "/home/lyt/tju_rllab_realman_lyt/camera/20260325_031804/camera_results.json"
 
     # 指令
     instruction = "把魔方放到泰迪熊和玩具马的中间。"

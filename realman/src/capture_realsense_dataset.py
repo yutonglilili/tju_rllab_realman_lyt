@@ -3,7 +3,7 @@
 采集 RealSense 图像并保存为配套数据集。
 
 目录结构示例：
-    /home/zhangzhao/lyt/camera/20260324_153000/
+    /home/lyt/tju_rllab_realman_lyt/datasets/images/20260324_153000/
         ├── depth/
         │   ├── 00001.npz
         │   ├── ...
@@ -86,7 +86,7 @@ def main() -> None:
     parser.add_argument(
         "--save_root",
         type=str,
-        default="/home/zhangzhao/lyt/camera",
+        default="/home/lyt/tju_rllab_realman_lyt/datasets/images",
         help="数据保存根目录",
     )
     parser.add_argument("--num_frames", type=int, default=10, help="采集帧数")
