@@ -15,17 +15,35 @@ import threading
 import numpy as np
 import traceback
 from enum import Enum, auto
+from dataclasses import dataclass
 
 # 项目路径配置
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+DEMO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+SDK_PYTHON_ROOT = os.path.join(WORKSPACE_ROOT, "realman", "RM_API2", "Python")
+for path in (DEMO_ROOT, WORKSPACE_ROOT, SDK_PYTHON_ROOT):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
-from realman.realman_env import RealmanEnv, T_from_realman_xyzrpy, realman_xyzrpy_from_T
+from realman.realman_env import (
+    RealmanEnv,
+    T_from_realman_xyzrpy,
+    pose_tcp2eef,
+    realman_xyzrpy_from_T,
+)
 from realman.open3d_realsense_env import Open3dRealsenseEnv
+from Robotic_Arm.rm_ctypes_wrap import rm_inverse_kinematics_params_t
 
 from demo_new.skills.tools.config_utils import ConfigNamespace, load_config_with_defaults, resolve_config_path
 from demo_new.skills.tools.utils import make_lift_T, make_target_T, save_obs_image, crop_image_around_point
+from demo_new.skills.pnp_skill.graspgen_bridge import (
+    GraspFilterConfig,
+    GraspGenClientBridge,
+    WristProcessingConfig,
+    build_pregrasp_pose_from_grasp,
+    infer_pick_grasp_candidates_from_wrist,
+    load_wrist_handeye_config,
+)
 
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
     get_point_vllm,
@@ -96,6 +114,38 @@ SKILL_CONFIG_KEYS = (
 )
 OPTIONAL_SKILL_CONFIG_KEYS = (
     "motion_profiles",
+    "GRASPGEN_SERVER_HOST",
+    "GRASPGEN_SERVER_PORT",
+    "GRASPGEN_TIMEOUT_MS",
+    "GRASPGEN_NUM_GRASPS",
+    "GRASPGEN_TOPK_NUM_GRASPS",
+    "GRASPGEN_GRASP_THRESHOLD",
+    "GRASPGEN_MAX_CANDIDATES",
+    "DEBUG_EXIT_AFTER_GRASP_CANDIDATES",
+    "GRASPGEN_CANDIDATE_PREGRASP_OFFSET_M",
+    "WRIST_MIN_DEPTH_M",
+    "WRIST_MAX_DEPTH_M",
+    "WRIST_DEPTH_PATCH_RADIUS",
+    "WRIST_CLICK_SEED_RADIUS_PX",
+    "WRIST_SEED_SEARCH_RADIUS_PX",
+    "WRIST_REGION_GROW_NEIGHBOR_RADIUS_PX",
+    "WRIST_REGION_GROW_3D_THRESHOLD_M",
+    "WRIST_REGION_GROW_DEPTH_THRESHOLD_M",
+    "WRIST_REGION_GROW_COLOR_THRESHOLD",
+    "WRIST_REGION_GROW_MAX_SEED_DISTANCE_M",
+    "WRIST_MIN_MASK_PIXELS",
+    "WRIST_MASK_KERNEL_SIZE",
+    "WRIST_TABLE_HEIGHT_PERCENTILE",
+    "WRIST_TABLE_REMOVE_MARGIN_M",
+    "WRIST_MAX_OBJECT_POINTS",
+    "WRIST_OBJECT_VOXEL_SIZE",
+    "WRIST_MAX_SCENE_POINTS",
+    "WRIST_SCENE_VOXEL_SIZE",
+    "GRASPGEN_DIRECTION_RULE_TARGET_DIR_CAMERA",
+    "GRASPGEN_DIRECTION_RULE_MAX_ANGLE_DEG",
+    "GRASPGEN_DIRECTION_RULE_MIN_FORWARD_COMPONENT",
+    "GRASPGEN_DIRECTION_RULE_MIN_DOWN_COMPONENT",
+    "GRASPGEN_DIRECTION_RULE_MAX_LATERAL_COMPONENT",
 )
 
 Config = ConfigNamespace
@@ -158,6 +208,90 @@ def _build_phase_config(state, task_phase):
     return Config(config_values)
 
 
+def _build_wrist_processing_config(config) -> WristProcessingConfig:
+    return WristProcessingConfig(
+        min_depth_m=float(getattr(config, "WRIST_MIN_DEPTH_M", 0.10)),
+        max_depth_m=float(getattr(config, "WRIST_MAX_DEPTH_M", 1.20)),
+        depth_patch_radius=int(getattr(config, "WRIST_DEPTH_PATCH_RADIUS", 3)),
+        click_seed_radius_px=int(getattr(config, "WRIST_CLICK_SEED_RADIUS_PX", 5)),
+        seed_search_radius_px=int(getattr(config, "WRIST_SEED_SEARCH_RADIUS_PX", 15)),
+        region_grow_neighbor_radius_px=int(
+            getattr(config, "WRIST_REGION_GROW_NEIGHBOR_RADIUS_PX", 2)
+        ),
+        region_grow_3d_threshold_m=float(
+            getattr(config, "WRIST_REGION_GROW_3D_THRESHOLD_M", 0.018)
+        ),
+        region_grow_depth_threshold_m=float(
+            getattr(config, "WRIST_REGION_GROW_DEPTH_THRESHOLD_M", 0.030)
+        ),
+        region_grow_color_threshold=float(
+            getattr(config, "WRIST_REGION_GROW_COLOR_THRESHOLD", 140.0)
+        ),
+        region_grow_max_seed_distance_m=float(
+            getattr(config, "WRIST_REGION_GROW_MAX_SEED_DISTANCE_M", 0.24)
+        ),
+        min_mask_pixels=int(getattr(config, "WRIST_MIN_MASK_PIXELS", 120)),
+        mask_kernel_size=int(getattr(config, "WRIST_MASK_KERNEL_SIZE", 3)),
+        table_height_percentile=float(
+            getattr(config, "WRIST_TABLE_HEIGHT_PERCENTILE", 8.0)
+        ),
+        table_remove_margin_m=float(getattr(config, "WRIST_TABLE_REMOVE_MARGIN_M", 0.008)),
+        max_object_points=int(getattr(config, "WRIST_MAX_OBJECT_POINTS", 4096)),
+        object_voxel_size=float(getattr(config, "WRIST_OBJECT_VOXEL_SIZE", 0.003)),
+        max_scene_points=int(getattr(config, "WRIST_MAX_SCENE_POINTS", 8192)),
+        scene_voxel_size=float(getattr(config, "WRIST_SCENE_VOXEL_SIZE", 0.004)),
+    )
+
+
+def _build_grasp_filter_config(config) -> GraspFilterConfig:
+    target_dir = getattr(config, "GRASPGEN_DIRECTION_RULE_TARGET_DIR_CAMERA", [0.0, 0.64, 0.77])
+    return GraspFilterConfig(
+        grasp_threshold=float(getattr(config, "GRASPGEN_GRASP_THRESHOLD", -1.0)),
+        num_grasps=int(getattr(config, "GRASPGEN_NUM_GRASPS", 200)),
+        topk_num_grasps=int(getattr(config, "GRASPGEN_TOPK_NUM_GRASPS", 50)),
+        max_candidates=int(getattr(config, "GRASPGEN_MAX_CANDIDATES", 5)),
+        candidate_pregrasp_offset_m=float(
+            getattr(config, "GRASPGEN_CANDIDATE_PREGRASP_OFFSET_M", 0.10)
+        ),
+        direction_rule_target_dir_camera=tuple(float(v) for v in target_dir),
+        direction_rule_max_angle_deg=float(
+            getattr(config, "GRASPGEN_DIRECTION_RULE_MAX_ANGLE_DEG", 35.0)
+        ),
+        direction_rule_min_forward_component=float(
+            getattr(config, "GRASPGEN_DIRECTION_RULE_MIN_FORWARD_COMPONENT", 0.30)
+        ),
+        direction_rule_min_down_component=float(
+            getattr(config, "GRASPGEN_DIRECTION_RULE_MIN_DOWN_COMPONENT", 0.20)
+        ),
+        direction_rule_max_lateral_component=float(
+            getattr(config, "GRASPGEN_DIRECTION_RULE_MAX_LATERAL_COMPONENT", 0.45)
+        ),
+    )
+
+
+def _print_grasp_candidate_summary(state) -> None:
+    grasp_pose_pool = state.grasp_pose_pool_base.copy()
+    grasp_scores = state.grasp_pose_pool_scores.copy()
+
+    print("[调试] GraspGen 候选抓取姿态如下（脚本将在执行前退出）:")
+    if len(grasp_pose_pool) == 0:
+        print("[调试] 当前没有可用候选姿态。")
+        return
+
+    for idx, grasp_T_base in enumerate(grasp_pose_pool):
+        score = float(grasp_scores[idx]) if idx < len(grasp_scores) else None
+        pose_tcp = _matrix_to_tcp_pose(grasp_T_base)
+        pose_eef = pose_tcp2eef(pose_tcp)
+        score_text = "None" if score is None else f"{score:.4f}"
+        print(
+            f"[调试] candidate {idx + 1}/{len(grasp_pose_pool)} "
+            f"score={score_text} "
+            f"tcp_xyzrpy={np.round(pose_tcp, 4).tolist()}"
+            f"eef_xyzrpy={np.round(pose_eef, 4).tolist()}"
+        )
+        print(np.array2string(grasp_T_base, precision=4, suppress_small=True))
+
+
 # ═══════════════════════════════════════════════════
 # 枚举定义
 # ═══════════════════════════════════════════════════
@@ -168,6 +302,26 @@ class TaskPhase(Enum):
     PICK = auto()
     PLACE = auto()
     COMPLETE = auto()
+
+
+class PickStage(Enum):
+    """抓取阶段的细粒度状态机。"""
+    IDLE = auto()
+    GLOBAL_TRACKING = auto()
+    PREGRASP_EXECUTING = auto()
+    WRIST_SENSING = auto()
+    GRASP_PLAN_READY = auto()
+    GRASP_EXECUTING = auto()
+    VERIFYING = auto()
+
+
+@dataclass
+class PickPoseBundle:
+    """Heuristic pick triplet used for coarse pregrasp and fallback grasping."""
+
+    pick_T: np.ndarray
+    pre_pick_T: np.ndarray
+    post_pick_T: np.ndarray
 
 
 # ═══════════════════════════════════════════════════
@@ -185,6 +339,7 @@ class SharedState:
         # ===== 任务信息 =====
         self.current_task = None                    # {'pick': ..., 'place': ...}
         self.task_phase = TaskPhase.IDLE
+        self.pick_stage = PickStage.IDLE
 
         # ===== 感知输出 =====
         # ===== 移动检测 =====
@@ -198,6 +353,8 @@ class SharedState:
         self.is_first_point = True
         self.tracking_mode = False                  # 追踪模式
         self.tracking_session_id = 0               # Invalidate in-flight tracking work across mode switches
+        self.wrist_mode = False                     # 腕部单次感知模式
+        self.wrist_session_id = 0
         self.verify_mode = False                    # 验证模式
 
         # ===== 规划输出 =====
@@ -205,6 +362,20 @@ class SharedState:
         self.action_index = 0
         self.plan_ready = threading.Event()         # 规划完成信号
         self.need_replan = threading.Event()        # 需要重规划信号
+        self.wrist_result_ready = threading.Event()
+        self.grasp_plan_ready = threading.Event()
+
+        self.pregrasp_pose_base = None
+        self.fallback_pregrasp_pose_base = None
+        self.fallback_pick_pose_base = None
+        self.post_pick_pose_base = None
+
+        self.grasp_pose_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
+        self.grasp_pregrasp_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
+        self.grasp_pose_pool_scores = np.zeros((0,), dtype=np.float32)
+        self.selected_grasp_pose_base = None
+        self.selected_grasp_score = None
+        self.grasp_plan_source = None
 
         # ===== 执行控制 =====
         self.attemp_count = 0
@@ -216,12 +387,21 @@ class SharedState:
 
         # ===== 全局控制 =====
         self.stop_all = threading.Event()           # 全局停止
+
+        # ===== 腕部相机与 GraspGen =====
+        self.wrist_grasp_enabled = False
+        self.wrist_click_2d = None
+        self.wrist_mask = None
+        self.wrist_object_pc_base = None
+        self.wrist_scene_pc_base = None
+        self.wrist_grasp_debug = None
     
     def reset_state(self):
         with self.lock:
 
             self.current_task = None
             self.task_phase = TaskPhase.IDLE
+            self.pick_stage = PickStage.IDLE
 
             self.target_description = None
             self.latest_point_2d = None
@@ -232,12 +412,31 @@ class SharedState:
             self.is_first_point = True
             self.tracking_session_id += 1
             self.tracking_mode = False
+            self.wrist_session_id += 1
+            self.wrist_mode = False
             self.verify_mode = False
+            self.wrist_click_2d = None
+            self.wrist_mask = None
+            self.wrist_object_pc_base = None
+            self.wrist_scene_pc_base = None
+            self.wrist_grasp_debug = None
 
             self.action_list = []
             self.action_index = 0
             self.plan_ready.clear()
             self.need_replan.clear()
+            self.wrist_result_ready.clear()
+            self.grasp_plan_ready.clear()
+            self.pregrasp_pose_base = None
+            self.fallback_pregrasp_pose_base = None
+            self.fallback_pick_pose_base = None
+            self.post_pick_pose_base = None
+            self.grasp_pose_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
+            self.grasp_pregrasp_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
+            self.grasp_pose_pool_scores = np.zeros((0,), dtype=np.float32)
+            self.selected_grasp_pose_base = None
+            self.selected_grasp_score = None
+            self.grasp_plan_source = None
 
             self.attemp_count = 0
             self.abort_execution.clear()
@@ -252,6 +451,12 @@ def _set_tracking_mode_locked(state, enabled):
     state.tracking_mode = enabled
 
 
+def _set_wrist_mode_locked(state, enabled):
+    if state.wrist_mode != enabled:
+        state.wrist_session_id += 1
+    state.wrist_mode = enabled
+
+
 def _tracking_request_is_stale(state, tracking_session_id, task_phase, target_description):
     with state.lock:
         return (
@@ -262,11 +467,459 @@ def _tracking_request_is_stale(state, tracking_session_id, task_phase, target_de
         )
 
 
+def _wrist_request_is_stale(state, wrist_session_id, target_description):
+    with state.lock:
+        return (
+            (not state.wrist_mode)
+            or state.wrist_session_id != wrist_session_id
+            or state.task_phase != TaskPhase.PICK
+            or state.target_description != target_description
+        )
+
+
+def _empty_grasp_pose_pool():
+    return np.zeros((0, 4, 4), dtype=np.float32)
+
+
+def _empty_grasp_score_pool():
+    return np.zeros((0,), dtype=np.float32)
+
+
+def _clear_grasp_outputs_locked(state):
+    state.wrist_click_2d = None
+    state.wrist_mask = None
+    state.wrist_object_pc_base = None
+    state.wrist_scene_pc_base = None
+    state.wrist_grasp_debug = None
+    state.grasp_pose_pool_base = _empty_grasp_pose_pool()
+    state.grasp_pregrasp_pool_base = _empty_grasp_pose_pool()
+    state.grasp_pose_pool_scores = _empty_grasp_score_pool()
+    state.selected_grasp_pose_base = None
+    state.selected_grasp_score = None
+    state.grasp_plan_source = None
+
+
+def _reset_pick_tracking_locked(state, target_description, *, attempt_count=None):
+    state.task_phase = TaskPhase.PICK
+    state.pick_stage = PickStage.GLOBAL_TRACKING
+    state.target_description = target_description
+    state.latest_point_2d = None
+    state.latest_point_3d = None
+    state.latest_target_T = None
+    state.previous_point_3d = None
+    state.point_changed = False
+    state.is_first_point = True
+    state.action_list = []
+    state.action_index = 0
+    state.plan_ready.clear()
+    state.need_replan.clear()
+    state.wrist_result_ready.clear()
+    state.grasp_plan_ready.clear()
+    state.abort_execution.clear()
+    state.pregrasp_pose_base = None
+    state.fallback_pregrasp_pose_base = None
+    state.fallback_pick_pose_base = None
+    state.post_pick_pose_base = None
+    _clear_grasp_outputs_locked(state)
+    _set_wrist_mode_locked(state, False)
+    _set_tracking_mode_locked(state, True)
+    state.verify_mode = False
+    if attempt_count is not None:
+        state.attemp_count = attempt_count
+
+
+def _matrix_to_tcp_pose(T_base: np.ndarray, min_z: float = 0.01) -> np.ndarray:
+    pose = np.asarray(realman_xyzrpy_from_T(T_base), dtype=np.float64).copy()
+    pose[2] = max(float(pose[2]), float(min_z))
+    return pose
+
+
+def _build_pick_pose_bundle(state, target_T, home_T_tcp2base) -> PickPoseBundle:
+    config = _build_phase_config(state, TaskPhase.PICK)
+
+    target_T = make_lift_T(
+        target_T,
+        lift_x=config.PICK_X_OFFSET,
+        lift_y=config.PICK_Y_OFFSET,
+        lift_z=config.PICK_Z_OFFSET,
+    )
+
+    if config.PICK_RPY is not None:
+        print(
+            "[PnP] use PICK_RPY override:",
+            np.round(np.asarray(config.PICK_RPY, dtype=float), 4).tolist(),
+        )
+        target_pose = realman_xyzrpy_from_T(target_T)
+        target_pose[3:] = np.asarray(config.PICK_RPY, dtype=float)
+        pick_T = T_from_realman_xyzrpy(target_pose)
+    else:
+        pick_T = adjust_target_T(state, target_T, home_T_tcp2base)
+
+    pick_pose = _matrix_to_tcp_pose(pick_T)
+    pick_T = T_from_realman_xyzrpy(pick_pose)
+
+    pre_pick_T = make_lift_T(
+        pick_T,
+        lift_x=config.PRE_PICK_X_OFFSET,
+        lift_y=config.PRE_PICK_Y_OFFSET,
+        lift_z=config.PRE_PICK_Z_OFFSET,
+    )
+    post_pick_T = make_lift_T(
+        pick_T,
+        lift_x=config.POST_PICK_X_OFFSET,
+        lift_y=config.POST_PICK_Y_OFFSET,
+        lift_z=config.POST_PICK_Z_OFFSET,
+    )
+
+    return PickPoseBundle(
+        pick_T=pick_T,
+        pre_pick_T=pre_pick_T,
+        post_pick_T=post_pick_T,
+    )
+
+
+def _build_pick_pregrasp_action_list(state, target_T, home_T_tcp2base):
+    config = _build_phase_config(state, TaskPhase.PICK)
+    pose_bundle = _build_pick_pose_bundle(state, target_T, home_T_tcp2base)
+    pre_pick_pose = _matrix_to_tcp_pose(pose_bundle.pre_pick_T)
+    action_list = [
+        {
+            "pose": pre_pick_pose,
+            "gripper": config.GRIPPER_OPEN,
+            "tag": 0,
+            "motion": "pose",
+            "wait_gripper": False,
+        }
+    ]
+    return action_list, pose_bundle
+
+
+def _build_post_pick_from_grasp(state, grasp_T_base):
+    config = _build_phase_config(state, TaskPhase.PICK)
+    return make_lift_T(
+        grasp_T_base,
+        lift_x=config.POST_PICK_X_OFFSET,
+        lift_y=config.POST_PICK_Y_OFFSET,
+        lift_z=config.POST_PICK_Z_OFFSET,
+    )
+
+
+def _build_candidate_pregrasp_from_grasp(state, grasp_T_base):
+    grasp_filter_cfg = _build_grasp_filter_config(state.config)
+    return build_pregrasp_pose_from_grasp(
+        np.asarray(grasp_T_base, dtype=np.float32),
+        retreat_m=grasp_filter_cfg.candidate_pregrasp_offset_m,
+    )
+
+
+def _build_fallback_pick_action_list(state, pick_T, pre_pick_T, post_pick_T):
+    config = _build_phase_config(state, TaskPhase.PICK)
+    return [
+        {
+            "pose": _matrix_to_tcp_pose(pre_pick_T),
+            "gripper": config.GRIPPER_OPEN,
+            "tag": 0,
+            "motion": "pose",
+            "wait_gripper": False,
+        },
+        {
+            "pose": _matrix_to_tcp_pose(pick_T),
+            "gripper": config.GRIPPER_CLOSE,
+            "tag": 1,
+            "motion": "pose",
+            "wait_gripper": True,
+        },
+        {
+            "pose": _matrix_to_tcp_pose(post_pick_T),
+            "tag": 2,
+            "motion": "pose",
+        },
+    ]
+
+
+def _pose_to_step_action(action):
+    step_action = {}
+
+    if "joints" in action:
+        joint_deg = (
+            np.degrees(action["joints"])
+            if np.max(np.abs(action["joints"])) < 2 * np.pi
+            else action["joints"]
+        )
+        step_action["joint"] = joint_deg
+    elif "pose" in action:
+        step_action["pose"] = action["pose"]
+
+    if "motion" in action:
+        step_action["motion"] = action["motion"]
+
+    if "gripper" in action:
+        step_action["gripper"] = action["gripper"]
+
+    if "wait_gripper" in action:
+        step_action["wait_gripper"] = action["wait_gripper"]
+
+    return step_action
+
+
+def _get_current_joint_seed(env) -> np.ndarray:
+    robot_state = env.get_state()
+    if robot_state is None or robot_state.joint is None:
+        raise RuntimeError("Failed to read the current robot joint state.")
+    return np.asarray(robot_state.joint, dtype=np.float64)
+
+
+def solve_pose_ik(env, pose_tcp, seed_joint_rad=None):
+    pose_tcp = np.asarray(pose_tcp, dtype=np.float64).reshape(6)
+    seed_joint_rad = (
+        _get_current_joint_seed(env)
+        if seed_joint_rad is None
+        else np.asarray(seed_joint_rad, dtype=np.float64).reshape(-1)
+    )
+
+    arm = env.driver.arm
+    arm_dof = int(getattr(arm, "arm_dof", 7) or 7)
+    q_in_deg = np.degrees(seed_joint_rad[:arm_dof]).astype(np.float32)
+    if arm_dof < 7:
+        q_in_deg = np.pad(q_in_deg, (0, 7 - arm_dof))
+
+    pose_eef = pose_tcp2eef(pose_tcp)
+    params = rm_inverse_kinematics_params_t(
+        q_in=q_in_deg.tolist(),
+        q_pose=np.asarray(pose_eef, dtype=np.float32).tolist(),
+        flag=1,
+    )
+
+    ik_method = "generic"
+    ret, joint_deg = arm.rm_algo_inverse_kinematics(params)
+
+    if ret != 0:
+        try:
+            arm_angle_ret, arm_angle = arm.rm_algo_calculate_arm_angle_from_config_rm75(
+                q_in_deg.tolist()
+            )
+            if arm_angle_ret == 0:
+                rm75_ret, rm75_joint_deg = arm.rm_algo_inverse_kinematics_rm75_for_arm_angle(
+                    params,
+                    arm_angle,
+                )
+                if rm75_ret == 0:
+                    ret = rm75_ret
+                    joint_deg = rm75_joint_deg
+                    ik_method = "rm75_arm_angle"
+        except Exception:
+            pass
+
+    if ret != 0:
+        return False, None, {"ret": int(ret), "method": ik_method}
+
+    joint_deg = np.asarray(joint_deg[:arm_dof], dtype=np.float64)
+    if not np.all(np.isfinite(joint_deg)):
+        return False, None, {"ret": int(ret), "method": ik_method, "reason": "nan_joint"}
+
+    collision_ret = arm.rm_algo_safety_robot_self_collision_detection(joint_deg.tolist())
+    if collision_ret != 0:
+        return (
+            False,
+            np.radians(joint_deg),
+            {
+                "ret": int(ret),
+                "collision_ret": int(collision_ret),
+                "method": ik_method,
+            },
+        )
+
+    return (
+        True,
+        np.radians(joint_deg),
+        {
+            "ret": int(ret),
+            "collision_ret": int(collision_ret),
+            "method": ik_method,
+        },
+    )
+
+
+def check_pose_sequence_reachable(env, tcp_pose_sequence, seed_joint_rad=None):
+    reachability_debug = []
+    joint_seed = seed_joint_rad
+
+    for pose_tcp in tcp_pose_sequence:
+        reachable, joint_seed, ik_info = solve_pose_ik(env, pose_tcp, seed_joint_rad=joint_seed)
+        reachability_debug.append(
+            {
+                "pose_tcp": np.round(np.asarray(pose_tcp, dtype=np.float64), 4).tolist(),
+                "ik": ik_info,
+            }
+        )
+        if not reachable:
+            return False, joint_seed, reachability_debug
+
+    return True, joint_seed, reachability_debug
+
+
+def _execute_action_sequence_direct(env, action_list):
+    for action in action_list:
+        env.step(_pose_to_step_action(action))
+
+
+def try_execute_grasp_candidate(state, env, grasp_T_base, pregrasp_T_base, score):
+    grasp_pose_tcp = _matrix_to_tcp_pose(grasp_T_base)
+    pregrasp_pose_tcp = _matrix_to_tcp_pose(pregrasp_T_base)
+    postgrasp_T_base = _build_post_pick_from_grasp(state, grasp_T_base)
+    postgrasp_pose_tcp = _matrix_to_tcp_pose(postgrasp_T_base)
+
+    reachable, _, reachability_debug = check_pose_sequence_reachable(
+        env,
+        [pregrasp_pose_tcp, grasp_pose_tcp, postgrasp_pose_tcp],
+    )
+    if not reachable:
+        return False, {"stage": "reachability", "reachability_debug": reachability_debug}
+
+    config = _build_phase_config(state, TaskPhase.PICK)
+    action_list = [
+        {
+            "pose": pregrasp_pose_tcp,
+            "gripper": config.GRIPPER_OPEN,
+            "tag": 0,
+            "motion": "pose",
+            "wait_gripper": False,
+        },
+        {
+            "pose": grasp_pose_tcp,
+            "gripper": config.GRIPPER_CLOSE,
+            "tag": 1,
+            "motion": "linear",
+            "wait_gripper": True,
+        },
+        {
+            "pose": postgrasp_pose_tcp,
+            "tag": 2,
+            "motion": "pose",
+        },
+    ]
+
+    _execute_action_sequence_direct(env, action_list)
+
+    with state.lock:
+        state.selected_grasp_pose_base = np.asarray(grasp_T_base, dtype=np.float32).copy()
+        state.selected_grasp_score = None if score is None else float(score)
+        state.post_pick_pose_base = np.asarray(postgrasp_T_base, dtype=np.float32).copy()
+
+    return (
+        True,
+        {
+            "stage": "executed",
+            "reachability_debug": reachability_debug,
+        },
+    )
+
+
+def execute_fallback_pick(state, env):
+    with state.lock:
+        pick_T = None if state.fallback_pick_pose_base is None else state.fallback_pick_pose_base.copy()
+        pre_pick_T = (
+            None
+            if state.fallback_pregrasp_pose_base is None
+            else state.fallback_pregrasp_pose_base.copy()
+        )
+        post_pick_T = None if state.post_pick_pose_base is None else state.post_pick_pose_base.copy()
+
+    if pick_T is None or pre_pick_T is None or post_pick_T is None:
+        return False, {"stage": "fallback", "reason": "missing_fallback_pose"}
+
+    pick_pose_tcp = _matrix_to_tcp_pose(pick_T)
+    pre_pick_pose_tcp = _matrix_to_tcp_pose(pre_pick_T)
+    post_pick_pose_tcp = _matrix_to_tcp_pose(post_pick_T)
+    reachable, _, reachability_debug = check_pose_sequence_reachable(
+        env,
+        [pre_pick_pose_tcp, pick_pose_tcp, post_pick_pose_tcp],
+    )
+    if not reachable:
+        return False, {"stage": "fallback_reachability", "reachability_debug": reachability_debug}
+
+    action_list = _build_fallback_pick_action_list(state, pick_T, pre_pick_T, post_pick_T)
+    _execute_action_sequence_direct(env, action_list)
+
+    with state.lock:
+        state.selected_grasp_pose_base = np.asarray(pick_T, dtype=np.float32).copy()
+        state.selected_grasp_score = None
+        state.grasp_plan_source = "heuristic_fallback"
+
+    return True, {"stage": "fallback_executed", "reachability_debug": reachability_debug}
+
+
+def _consume_action_list_execution(state, env):
+    config = state.config
+    motion_fail_streak = 0
+
+    while not state.stop_all.is_set():
+        if state.abort_execution.is_set():
+            print("[执行] ⏹️ 执行被中止，等待重新规划")
+            with state.lock:
+                state.action_list = []
+                state.action_index = 0
+            state.plan_ready.clear()
+            return "aborted"
+
+        with state.lock:
+            if state.action_index >= len(state.action_list):
+                state.plan_ready.clear()
+                return "completed"
+            action = copy.deepcopy(state.action_list[state.action_index])
+
+        if action.get("tag") != 0:
+            with state.lock:
+                _set_tracking_mode_locked(state, False)
+                state.verify_mode = False
+
+        try:
+            env.step(_pose_to_step_action(action))
+        except RuntimeError as exc:
+            motion_fail_streak += 1
+            print(
+                f"[执行] ⚠️ 运动失败 ({motion_fail_streak}/{config.MAX_CONSECUTIVE_MOTION_FAILURES}): {exc}"
+            )
+            if motion_fail_streak >= config.MAX_CONSECUTIVE_MOTION_FAILURES:
+                print("[执行] ⛔ 连续运动失败达到上限，终止本段轨迹并请求重新规划")
+                with state.lock:
+                    state.action_list = []
+                    state.action_index = 0
+                state.abort_execution.set()
+                state.plan_ready.clear()
+                state.need_replan.set()
+                return "replan"
+            continue
+
+        if state.abort_execution.is_set():
+            print("[执行] ⏹️ 动作完成后检测到中止信号，停止后续动作")
+            with state.lock:
+                state.action_list = []
+                state.action_index = 0
+            state.plan_ready.clear()
+            return "aborted"
+
+        motion_fail_streak = 0
+        with state.lock:
+            state.action_index += 1
+
+    return "stopped"
+
+
 # ═══════════════════════════════════════════════════
 # 感知线程
 # ═══════════════════════════════════════════════════
 
-def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
+def perception_thread(
+    state,
+    env,
+    rs_env,
+    cam_results,
+    home_T_tcp2base,
+    wrist_rs_env=None,
+    graspgen_client=None,
+    wrist_handeye_config=None,
+):
     """
     感知线程, 分为两种模式:
     1. 追踪模式: 持续以固定频率调用 VLM 打点，检测目标变化。
@@ -275,13 +928,12 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
     print("[感知线程] 已启动")
 
     config = state.config
+    wrist_processing_cfg = _build_wrist_processing_config(config)
+    grasp_filter_cfg = _build_grasp_filter_config(config)
 
     while not state.stop_all.is_set():
 
-        # 追踪模式
         if state.tracking_mode:
-
-            # 获取当前追踪目标
             with state.lock:
                 target_description = state.target_description
                 task_phase = state.task_phase
@@ -291,11 +943,9 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     continue
 
             try:
-                # 获取 RGB 图像
                 obs = rs_env.step()
                 image_rgb = obs["rgb"]
 
-                # double check tracking 状态(防止 post 阶段误打点)
                 if _tracking_request_is_stale(
                     state,
                     tracking_session_id,
@@ -305,7 +955,6 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     time.sleep(config.PERCEPTION_INTERVAL)
                     continue
 
-                # 调用 VLM 打点
                 point_2d = get_point_vllm(image_rgb, f"Point the {target_description}", save_path=None)
 
                 if _tracking_request_is_stale(
@@ -317,59 +966,170 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                     time.sleep(config.PERCEPTION_INTERVAL)
                     continue
 
-                # 保存打点图片
-                # save_check_image(image_rgb, point_2d, SAVE_DIR)
-                # get_point_vllm 返回 np.array([x, y])
-
-                # 2D → 3D 转换
                 target_T = make_target_T(obs, int(point_2d[0]), int(point_2d[1]), rs_env, cam_results, home_T_tcp2base)
 
-                # 修正通用的相机标定偏移
-                target_T = make_lift_T(target_T, lift_x=config.CAMERA_X_OFFSET, lift_y=config.CAMERA_Y_OFFSET, lift_z=config.CAMERA_Z_OFFSET)
+                target_T = make_lift_T(
+                    target_T,
+                    lift_x=config.CAMERA_X_OFFSET,
+                    lift_y=config.CAMERA_Y_OFFSET,
+                    lift_z=config.CAMERA_Z_OFFSET,
+                )
 
                 target_xyz = target_T[:3, 3]
 
-                # 更新共享状态 & 变化检测
+                tracking_stale = False
                 with state.lock:
-                    if (
+                    tracking_stale = (
                         (not state.tracking_mode)
                         or state.tracking_session_id != tracking_session_id
                         or state.task_phase != task_phase
                         or state.target_description != target_description
-                    ):
-                        time.sleep(config.PERCEPTION_INTERVAL)
-                        continue
+                    )
+                    if not tracking_stale:
+                        state.latest_point_2d = point_2d.copy()
+                        state.latest_point_3d = target_xyz.copy()
+                        state.latest_target_T = target_T.copy()
 
-                    state.latest_point_2d = point_2d.copy()
-                    state.latest_point_3d = target_xyz.copy()
-                    state.latest_target_T = target_T.copy()
-
-                    if state.is_first_point:
-                        # 第一个有效点
-                        state.previous_point_3d = target_xyz.copy()
-                        state.is_first_point = False
-                        state.point_changed = True
-                        state.need_replan.set()
-                        print(f"[感知] 📍 首次定位 {target_description}: xyz={np.round(target_xyz, 4)}")
-
-                    else:
-                        moved, dist = detect_target_movement(state, target_xyz, task_phase)
-
-                        if moved:
-                            # 目标移动了
+                        if state.is_first_point:
+                            state.previous_point_3d = target_xyz.copy()
+                            state.is_first_point = False
                             state.point_changed = True
-                            state.abort_execution.set() # 中止当前执行
-                            state.need_replan.set()     # 触发重规划
+                            state.need_replan.set()
+                            print(f"[感知] 📍 首次定位 {target_description}: xyz={np.round(target_xyz, 4)}")
 
-                            label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
-                            print(f"[感知] ⚠️ {label} {target_description} 移动！距离: {dist:.4f}m → 重规划")
                         else:
-                            state.point_changed = False # 目标没有移动
+                            moved, dist = detect_target_movement(state, target_xyz, task_phase)
+
+                            if moved:
+                                state.point_changed = True
+                                state.abort_execution.set()
+                                state.need_replan.set()
+
+                                label = "物体" if state.task_phase == TaskPhase.PICK else "容器"
+                                print(f"[感知] ⚠️ {label} {target_description} 移动！距离: {dist:.4f}m → 重规划")
+                            else:
+                                state.point_changed = False
+
+                if tracking_stale:
+                    time.sleep(config.PERCEPTION_INTERVAL)
+                    continue
 
             except Exception as e:
                 print(f"[感知] 异常: {e}")
 
-        # 验证模式
+        elif state.wrist_mode:
+            with state.lock:
+                target_description = state.target_description
+                wrist_session_id = state.wrist_session_id
+                wrist_enabled = state.wrist_grasp_enabled
+
+            if target_description is None:
+                time.sleep(config.PERCEPTION_INTERVAL)
+                continue
+
+            if not wrist_enabled or wrist_rs_env is None or graspgen_client is None or wrist_handeye_config is None:
+                error_msg = "Wrist GraspGen resources are not available in the main control process."
+                with state.lock:
+                    wrist_stale = (
+                        (not state.wrist_mode)
+                        or state.wrist_session_id != wrist_session_id
+                        or state.task_phase != TaskPhase.PICK
+                        or state.target_description != target_description
+                    )
+                    if not wrist_stale:
+                        _set_wrist_mode_locked(state, False)
+                        _clear_grasp_outputs_locked(state)
+                        state.wrist_grasp_debug = {"error": error_msg}
+                        state.wrist_result_ready.set()
+                print(f"[腕部感知] ⚠️ {error_msg}")
+                time.sleep(config.PERCEPTION_INTERVAL)
+                continue
+
+            try:
+                wrist_obs = wrist_rs_env.step()
+                if _wrist_request_is_stale(state, wrist_session_id, target_description):
+                    time.sleep(config.PERCEPTION_INTERVAL)
+                    continue
+
+                wrist_rgb = wrist_obs["rgb"]
+                click_2d = get_point_vllm(wrist_rgb, f"Point the {target_description}", save_path=None)
+                click_2d = np.asarray(click_2d, dtype=np.int32).reshape(2)
+
+                if _wrist_request_is_stale(state, wrist_session_id, target_description):
+                    time.sleep(config.PERCEPTION_INTERVAL)
+                    continue
+
+                robot_state = env.get_state()
+                if robot_state is None or robot_state.pose is None:
+                    raise RuntimeError("Failed to read robot TCP pose before wrist grasp inference.")
+
+                wrist_result = infer_pick_grasp_candidates_from_wrist(
+                    wrist_obs=wrist_obs,
+                    click_point_2d=(int(click_2d[0]), int(click_2d[1])),
+                    robot_pose_tcp=np.asarray(robot_state.pose, dtype=np.float64),
+                    handeye_config=wrist_handeye_config,
+                    graspgen_client=graspgen_client,
+                    processing_cfg=wrist_processing_cfg,
+                    grasp_filter_cfg=grasp_filter_cfg,
+                )
+
+                if _wrist_request_is_stale(state, wrist_session_id, target_description):
+                    time.sleep(config.PERCEPTION_INTERVAL)
+                    continue
+
+                wrist_stale = False
+                with state.lock:
+                    wrist_stale = (
+                        (not state.wrist_mode)
+                        or state.wrist_session_id != wrist_session_id
+                        or state.task_phase != TaskPhase.PICK
+                        or state.target_description != target_description
+                    )
+                    if not wrist_stale:
+                        state.wrist_click_2d = np.asarray(click_2d, dtype=np.int32)
+                        state.wrist_mask = wrist_result.mask.copy()
+                        state.wrist_object_pc_base = wrist_result.object_pc_base.copy()
+                        state.wrist_scene_pc_base = wrist_result.scene_pc_base.copy()
+                        state.wrist_grasp_debug = {
+                            **wrist_result.debug_info,
+                            "success": bool(wrist_result.success),
+                            "error": wrist_result.error,
+                        }
+                        state.grasp_pose_pool_base = wrist_result.grasp_pose_pool_base.copy()
+                        state.grasp_pregrasp_pool_base = wrist_result.grasp_pregrasp_pool_base.copy()
+                        state.grasp_pose_pool_scores = wrist_result.grasp_pose_pool_scores.copy()
+                        _set_wrist_mode_locked(state, False)
+                        state.wrist_result_ready.set()
+
+                if wrist_stale:
+                    time.sleep(config.PERCEPTION_INTERVAL)
+                    continue
+
+                print(
+                    "[腕部感知] ✅ 完成局部抓取推理: "
+                    f"候选 {len(wrist_result.grasp_pose_pool_base)} / 全部 {len(wrist_result.all_grasps_base)}"
+                )
+
+            except Exception as e:
+                error_msg = str(e)
+                debug_info = {
+                    "error": error_msg,
+                    "traceback": traceback.format_exc(),
+                }
+                with state.lock:
+                    wrist_stale = (
+                        (not state.wrist_mode)
+                        or state.wrist_session_id != wrist_session_id
+                        or state.task_phase != TaskPhase.PICK
+                        or state.target_description != target_description
+                    )
+                    if not wrist_stale:
+                        _set_wrist_mode_locked(state, False)
+                        _clear_grasp_outputs_locked(state)
+                        state.wrist_grasp_debug = debug_info
+                        state.wrist_result_ready.set()
+                print(f"[腕部感知] 异常: {error_msg}")
+
         elif state.verify_mode:
 
             with state.lock:
@@ -379,20 +1139,24 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                 check_point_2d = None if state.latest_point_2d is None else state.latest_point_2d.copy()
                 attemp_count = state.attemp_count
 
+            if current_task is None:
+                time.sleep(0.01)
+                continue
+
             if task_phase == TaskPhase.PICK:
                 
                 pick_success = do_check_pick_success(state, env, rs_env, current_task['pick'], point_2d=check_point_2d, cam_results=cam_results, home_T_tcp2base=home_T_tcp2base)
                 
                 if pick_success:
-                    # 重置状态
                     current_task = state.current_task
                     state.reset_state()
-                    # 改为 place 阶段
                     with state.lock:
                         state.current_task = current_task
                         state.task_phase = TaskPhase.PLACE
+                        state.pick_stage = PickStage.IDLE
                         state.target_description = current_task['place']
                         _set_tracking_mode_locked(state, True)
+                        _set_wrist_mode_locked(state, False)
                         state.verify_mode = False
                 
                 else:
@@ -402,20 +1166,15 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                         continue
                     
                     else:
-                        # 回到感知模式，重新打点
                         state.abort_execution.set()
                         state.plan_ready.clear()
 
                         with state.lock:
-                            state.latest_point_2d = None
-                            state.latest_point_3d = None
-                            state.latest_target_T = None
-                            state.previous_point_3d = None
-                            state.point_changed = False
-                            state.is_first_point = True
-                            _set_tracking_mode_locked(state, True)
-                            state.verify_mode = False
-                            state.attemp_count = attemp_count + 1
+                            _reset_pick_tracking_locked(
+                                state,
+                                current_task["pick"],
+                                attempt_count=attemp_count + 1,
+                            )
 
             elif task_phase == TaskPhase.PLACE:
                 
@@ -434,19 +1193,12 @@ def perception_thread(state, env, rs_env, cam_results, home_T_tcp2base):
                         continue
                     
                     else:
-                        # 回到感知模式，重新打点
                         with state.lock:
-                            state.target_description = current_task['pick']
-                            state.task_phase = TaskPhase.PICK
-                            state.latest_point_2d = None
-                            state.latest_point_3d = None
-                            state.latest_target_T = None
-                            state.previous_point_3d = None
-                            state.point_changed = False
-                            state.is_first_point = True
-                            _set_tracking_mode_locked(state, True)
-                            state.verify_mode = False
-                            state.attemp_count = attemp_count + 1
+                            _reset_pick_tracking_locked(
+                                state,
+                                current_task["pick"],
+                                attempt_count=attemp_count + 1,
+                            )
 
         else:
             time.sleep(0.01)
@@ -607,16 +1359,47 @@ def do_check_place_success(state, rs_env, pick_target, place_target, point_2d=No
 
 def planning_thread(state, env, curobo_planner, home_T_tcp2base):
     """
-    规划线程：接收 need_replan 信号，调用 curobo 生成 pick/place 单段轨迹。
+    规划线程：
+    1. 第三视角阶段生成粗预抓取或普通 place 动作序列；
+    2. 腕部单次观测完成后，把 GraspGen 候选池提交给执行线程。
     """
     print("[规划线程] 已启动")
 
-    config = state.config
-
     while not state.stop_all.is_set():
+        if state.wrist_result_ready.is_set():
+            state.wrist_result_ready.clear()
+
+            with state.lock:
+                if state.task_phase != TaskPhase.PICK:
+                    continue
+
+                num_candidates = int(len(state.grasp_pose_pool_base))
+                state.pick_stage = PickStage.GRASP_PLAN_READY
+                state.grasp_plan_source = "graspgen" if num_candidates > 0 else "heuristic_fallback"
+
+            print(f"[规划] 🤖 腕部抓取计划已就绪，候选数: {num_candidates}")
+
+            # DEBUG_EXIT_AFTER_GRASP_CANDIDATES START
+            # 临时调试钩子：输出候选抓取姿态后，优雅停止整个脚本，
+            # 避免执行线程继续尝试抓取动作导致真实机器人碰撞。
+            if bool(getattr(state.config, "DEBUG_EXIT_AFTER_GRASP_CANDIDATES", False)):
+                with state.lock:
+                    _print_grasp_candidate_summary(state)
+                    state.task_success = False
+                state.task_done.set()
+                state.stop_all.set()
+                print(
+                    "[调试] DEBUG_EXIT_AFTER_GRASP_CANDIDATES=True，"
+                    "已在抓取执行前停止脚本。恢复执行时把该配置改回 False。"
+                )
+                return
+            # DEBUG_EXIT_AFTER_GRASP_CANDIDATES END
+
+            with state.lock:
+                state.grasp_plan_ready.set()
+            continue
 
         triggered = state.need_replan.wait(timeout=0.05)
-        
         if not triggered:
             continue
 
@@ -627,33 +1410,51 @@ def planning_thread(state, env, curobo_planner, home_T_tcp2base):
                 continue
             task_phase = state.task_phase
             target_T = state.latest_target_T.copy()
+            wrist_grasp_enabled = bool(state.wrist_grasp_enabled)
 
         try:
-            # 获取当前关节状态
-            robot_state = env.get_state()           # TODO：这里很不稳定，需要优化
-            current_joint = robot_state.joint       # 弧度制
-
-            # 构建动作序列
-            action_list = build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, task_phase)
+            if task_phase == TaskPhase.PICK and wrist_grasp_enabled:
+                action_list, pick_pose_bundle = _build_pick_pregrasp_action_list(
+                    state,
+                    target_T,
+                    home_T_tcp2base,
+                )
+            else:
+                pick_pose_bundle = None
+                action_list = build_action_list(
+                    state,
+                    env,
+                    target_T,
+                    home_T_tcp2base,
+                    curobo_planner,
+                    task_phase,
+                )
 
             if action_list is None or len(action_list) == 0:
                 print("[规划] ⚠️ 规划失败，重新规划")
-                state.need_replan.set()             # 触发重规划
+                state.need_replan.set()
                 continue
 
-            # 更新共享状态
-            state.abort_execution.set()         # 中止旧执行
-
-            # 等 execution thread 确认停止
-            while state.plan_ready.is_set():
+            state.abort_execution.set()
+            while state.plan_ready.is_set() or state.grasp_plan_ready.is_set():
                 time.sleep(0.01)
-            
+
             with state.lock:
                 state.action_list = action_list
                 state.action_index = 0
-                state.abort_execution.clear()       # 允许新执行
-                state.plan_ready.set()              # 通知执行线程
-                print(f"[规划] 📐 规划完成，动作序列长度: {len(action_list)}")
+                state.abort_execution.clear()
+                state.plan_ready.set()
+
+                if pick_pose_bundle is not None:
+                    state.pregrasp_pose_base = pick_pose_bundle.pre_pick_T.copy()
+                    state.fallback_pregrasp_pose_base = pick_pose_bundle.pre_pick_T.copy()
+                    state.fallback_pick_pose_base = pick_pose_bundle.pick_T.copy()
+                    state.post_pick_pose_base = pick_pose_bundle.post_pick_T.copy()
+                    state.pick_stage = PickStage.PREGRASP_EXECUTING
+                    _clear_grasp_outputs_locked(state)
+                    print("[规划] 📐 预抓取规划完成，等待腕部单次观测")
+                else:
+                    print(f"[规划] 📐 规划完成，动作序列长度: {len(action_list)}")
 
         except Exception as e:
             print(f"[规划] 异常: {e}")
@@ -682,33 +1483,10 @@ def build_action_list(state, env, target_T, home_T_tcp2base, curobo_planner, tas
     config = _build_phase_config(state, task_phase)
 
     if task_phase == TaskPhase.PICK:
-        # 对 pick 位姿进行偏置
-        target_T = make_lift_T(target_T, lift_x=config.PICK_X_OFFSET, lift_y=config.PICK_Y_OFFSET, lift_z=config.PICK_Z_OFFSET)
-
-        # 修改 rpy
-        if config.PICK_RPY is not None:
-            print(
-                "[PnP] use PICK_RPY override:",
-                np.round(np.asarray(config.PICK_RPY, dtype=float), 4).tolist()
-            )
-            target_pose = realman_xyzrpy_from_T(target_T)
-            target_pose[3:] = np.array(config.PICK_RPY)
-            target_T_new = T_from_realman_xyzrpy(target_pose)
-        
-        else:
-            target_T_new = adjust_target_T(state, target_T, home_T_tcp2base)
-
-        target_pose = realman_xyzrpy_from_T(target_T_new)
-        
-        # 设置高度保护
-        if target_pose[2]<0.01:
-            target_pose[2]=0.01
-
-        pre_target_T = make_lift_T(target_T_new, lift_x=config.PRE_PICK_X_OFFSET,lift_y=config.PRE_PICK_Y_OFFSET, lift_z=config.PRE_PICK_Z_OFFSET)
-        pre_target_pose = realman_xyzrpy_from_T(pre_target_T)
-
-        post_target_T = make_lift_T(target_T_new, lift_x=config.POST_PICK_X_OFFSET,lift_y=config.POST_PICK_Y_OFFSET, lift_z=config.POST_PICK_Z_OFFSET)
-        post_target_pose = realman_xyzrpy_from_T(post_target_T)
+        pose_bundle = _build_pick_pose_bundle(state, target_T, home_T_tcp2base)
+        target_pose = _matrix_to_tcp_pose(pose_bundle.pick_T)
+        pre_target_pose = _matrix_to_tcp_pose(pose_bundle.pre_pick_T)
+        post_target_pose = _matrix_to_tcp_pose(pose_bundle.post_pick_T)
 
         action_list = [
             {"pose": pre_target_pose, "gripper": config.GRIPPER_OPEN, "tag": 0, "motion": "pose", "wait_gripper": False},
@@ -803,111 +1581,129 @@ def execution_thread(state, env):
     """
     print("[执行线程] 已启动")
 
-    config = state.config
-
     while not state.stop_all.is_set():
+        if state.grasp_plan_ready.is_set():
+            state.grasp_plan_ready.clear()
 
-        # 等待规划完成信号
+            with state.lock:
+                if state.task_phase != TaskPhase.PICK:
+                    continue
+
+                grasp_pose_pool = state.grasp_pose_pool_base.copy()
+                grasp_pregrasp_pool = state.grasp_pregrasp_pool_base.copy()
+                grasp_scores = state.grasp_pose_pool_scores.copy()
+                state.pick_stage = PickStage.GRASP_EXECUTING
+
+            executed = False
+            used_fallback = False
+
+            if len(grasp_pose_pool) > 0:
+                for idx, grasp_T_base in enumerate(grasp_pose_pool):
+                    if state.stop_all.is_set():
+                        break
+
+                    pregrasp_T_base = (
+                        grasp_pregrasp_pool[idx]
+                        if idx < len(grasp_pregrasp_pool)
+                        else _build_candidate_pregrasp_from_grasp(state, grasp_T_base)
+                    )
+                    score = float(grasp_scores[idx]) if idx < len(grasp_scores) else None
+                    print(
+                        f"[执行] 🤖 尝试抓取候选 {idx + 1}/{len(grasp_pose_pool)}"
+                        + (f"，score={score:.4f}" if score is not None else "")
+                    )
+
+                    try:
+                        success, debug_info = try_execute_grasp_candidate(
+                            state,
+                            env,
+                            grasp_T_base,
+                            pregrasp_T_base,
+                            score,
+                        )
+                    except RuntimeError as exc:
+                        success = False
+                        debug_info = {"stage": "motion", "error": str(exc)}
+
+                    if success:
+                        executed = True
+                        with state.lock:
+                            state.grasp_plan_source = "graspgen"
+                            state.wrist_grasp_debug = {
+                                **(state.wrist_grasp_debug or {}),
+                                "selected_candidate_index": idx,
+                                "selected_candidate_score": score,
+                                "selected_execution_debug": debug_info,
+                            }
+                        print(f"[执行] ✅ 抓取候选 {idx + 1} 执行成功")
+                        break
+
+                    print(f"[执行] ⚠️ 抓取候选 {idx + 1} 执行失败: {debug_info}")
+
+            if not executed and not state.stop_all.is_set():
+                print("[执行] ↩️ GraspGen 候选不可用，切换到启发式兜底抓取")
+                try:
+                    executed, fallback_debug = execute_fallback_pick(state, env)
+                except RuntimeError as exc:
+                    executed = False
+                    fallback_debug = {"stage": "fallback_motion", "error": str(exc)}
+                used_fallback = executed
+                with state.lock:
+                    state.wrist_grasp_debug = {
+                        **(state.wrist_grasp_debug or {}),
+                        "fallback_debug": fallback_debug,
+                    }
+
+            if executed:
+                with state.lock:
+                    _set_tracking_mode_locked(state, False)
+                    _set_wrist_mode_locked(state, False)
+                    state.verify_mode = True
+                    state.pick_stage = PickStage.VERIFYING
+                    if used_fallback:
+                        state.grasp_plan_source = "heuristic_fallback"
+                print("[执行] ✅ 抓取段执行完成，进入抓取验证")
+            else:
+                with state.lock:
+                    current_task = state.current_task or {}
+                    pick_target = current_task.get("pick")
+                    if pick_target is not None:
+                        _reset_pick_tracking_locked(state, pick_target)
+                print("[执行] ❌ 所有抓取候选与兜底方案均失败，回到全局重感知")
+
+            continue
+
         triggered = state.plan_ready.wait(timeout=0.05)
-        
         if not triggered:
             continue
 
         print("[执行] ▶️ 开始执行动作序列")
-        motion_fail_streak = 0
+        outcome = _consume_action_list_execution(state, env)
 
-        while not state.stop_all.is_set():
+        if outcome != "completed":
+            continue
 
-            # 检查中止信号
-            if state.abort_execution.is_set():
-                print("[执行] ⏹️ 执行被中止，等待重新规划")
-                
-                with state.lock:
-                    state.action_list = []
-                    state.action_index = 0
-                
-                state.plan_ready.clear()
-                break
+        with state.lock:
+            task_phase = state.task_phase
+            pick_stage = state.pick_stage
+            wrist_grasp_enabled = bool(state.wrist_grasp_enabled)
 
+        if task_phase == TaskPhase.PICK and wrist_grasp_enabled and pick_stage == PickStage.PREGRASP_EXECUTING:
             with state.lock:
-                
-                # 检查是否执行完毕
-                if state.action_index >= len(state.action_list):
-                    state.plan_ready.clear()
-                    _set_tracking_mode_locked(state, False)
-                    state.verify_mode = True   # 感知线程切换到验证模式
-                    print("[执行] ✅ 动作序列执行完成")
-                    break
+                _set_tracking_mode_locked(state, False)
+                _set_wrist_mode_locked(state, True)
+                state.verify_mode = False
+                state.pick_stage = PickStage.WRIST_SENSING
+            print("[执行] ✅ 已到达粗预抓取位姿，切换到腕部单次感知")
+            continue
 
-                # 取出当前动作（成功执行后再推进 action_index，失败则重试本步）
-                action = state.action_list[state.action_index]
-
-            # === 执行动作 ===
-
-            step_action = {}
-
-            if "joints" in action:
-                joint_deg = np.degrees(action["joints"]) if np.max(np.abs(action["joints"])) < 2 * np.pi else action["joints"]
-                step_action["joint"] = joint_deg
-            
-            elif "pose" in action:
-                step_action["pose"] = action["pose"]
-
-            if "motion" in action:
-                step_action["motion"] = action["motion"]
-
-            if "gripper" in action:
-                step_action["gripper"] = action["gripper"]
-
-            if "wait_gripper" in action:
-                step_action["wait_gripper"] = action["wait_gripper"]
-
-            if state.abort_execution.is_set():
-                print("[执行] ⏹️ 下发动作前检测到中止信号，停止旧动作序列")
-                with state.lock:
-                    state.action_list = []
-                    state.action_index = 0
-                state.plan_ready.clear()
-                break
-
-            # post阶段感知线程空转，避免影响执行
-            # Only keep movement tracking alive during the approach leg.
-            if action["tag"] != 0:
-                with state.lock:
-                    _set_tracking_mode_locked(state, False)
-                    state.verify_mode = False
-
-            try:
-                env.step(step_action)
-            except RuntimeError as e:
-                motion_fail_streak += 1
-                print(
-                    f"[执行] ⚠️ 运动失败 ({motion_fail_streak}/{config.MAX_CONSECUTIVE_MOTION_FAILURES}): {e}"
-                )
-                if motion_fail_streak >= config.MAX_CONSECUTIVE_MOTION_FAILURES:
-                    print(
-                        "[执行] ⛔ 连续运动失败达到上限，终止本段轨迹并请求重新规划"
-                    )
-                    with state.lock:
-                        state.action_list = []
-                        state.action_index = 0
-                    state.abort_execution.set()
-                    state.plan_ready.clear()
-                    state.need_replan.set()
-                    break
-                continue
-
-            if state.abort_execution.is_set():
-                print("[执行] ⏹️ 动作执行完成后检测到重规划请求，停止后续动作")
-                with state.lock:
-                    state.action_list = []
-                    state.action_index = 0
-                state.plan_ready.clear()
-                break
-
-            motion_fail_streak = 0
-            with state.lock:
-                state.action_index += 1
+        with state.lock:
+            _set_tracking_mode_locked(state, False)
+            _set_wrist_mode_locked(state, False)
+            state.verify_mode = True
+            if task_phase == TaskPhase.PICK:
+                state.pick_stage = PickStage.VERIFYING
+        print("[执行] ✅ 动作序列执行完成，进入结果验证")
 
     print("[执行线程] 已停止")
 
@@ -959,6 +1755,9 @@ def run_single_task(
     with state.lock:
         state.current_task = current_task
         state.task_phase = TaskPhase.PICK
+        state.pick_stage = PickStage.GLOBAL_TRACKING
+        state.verify_mode = False
+        _set_wrist_mode_locked(state, False)
         _set_tracking_mode_locked(state, True)
         state.target_description = task['pick']
 
@@ -1242,19 +2041,72 @@ def init_camera_env(camera_serial, cam_results_path):
 
     return rs_env, cam_results
 
+
+def init_wrist_grasp_env(
+    wrist_camera_serial,
+    *,
+    graspgen_host="127.0.0.1",
+    graspgen_port=5556,
+    graspgen_timeout_ms=60_000,
+    handeye_calib_json=None,
+    handeye_rotation=None,
+    handeye_translation=None,
+    handeye_frame="eef",
+    wait_for_server=True,
+):
+    wrist_rs_env = Open3dRealsenseEnv(wrist_camera_serial)
+    wrist_handeye_config = load_wrist_handeye_config(
+        calib_json=handeye_calib_json,
+        rotation=handeye_rotation,
+        translation=handeye_translation,
+        handeye_frame=handeye_frame,
+    )
+    graspgen_client = GraspGenClientBridge(
+        host=graspgen_host,
+        port=int(graspgen_port),
+        timeout_ms=int(graspgen_timeout_ms),
+        wait_for_server=wait_for_server,
+    )
+    return wrist_rs_env, graspgen_client, wrist_handeye_config
+
 # 状态初始化
 def init_state(config=None, task_config_path=None):
     resolved_config = load_pnp_config(task_config_path=task_config_path, task_config=config)
     return SharedState(resolved_config)
 
 # 启动系统
-def start_pnp_system(state, env, rs_env, cam_results, home_T_tcp2base):
+def start_pnp_system(
+    state,
+    env,
+    rs_env,
+    cam_results,
+    home_T_tcp2base,
+    wrist_rs_env=None,
+    graspgen_client=None,
+    wrist_handeye_config=None,
+):
     curobo_planner = None
+
+    with state.lock:
+        state.wrist_grasp_enabled = bool(
+            wrist_rs_env is not None
+            and graspgen_client is not None
+            and wrist_handeye_config is not None
+        )
 
     threads = [
         threading.Thread(
             target=perception_thread,
-            args=(state, env, rs_env, cam_results, home_T_tcp2base),
+            args=(
+                state,
+                env,
+                rs_env,
+                cam_results,
+                home_T_tcp2base,
+                wrist_rs_env,
+                graspgen_client,
+                wrist_handeye_config,
+            ),
             daemon=True,
         ),
         threading.Thread(
@@ -1273,11 +2125,15 @@ def start_pnp_system(state, env, rs_env, cam_results, home_T_tcp2base):
         t.start()
 
     print("✅ PnP 系统已启动")
+    if state.wrist_grasp_enabled:
+        print("✅ Wrist GraspGen 精抓取分支已启用")
+    else:
+        print("ℹ️ Wrist GraspGen 精抓取分支未启用，系统将只使用原始启发式抓取")
 
     return threads
 
 # 关闭系统
-def shutdown_pnp_system(state, env=None, rs_env=None):
+def shutdown_pnp_system(state, env=None, rs_env=None, wrist_rs_env=None, graspgen_client=None):
     print("🛑 正在关闭系统...")
     state.stop_all.set()
     time.sleep(0.5)
@@ -1287,6 +2143,12 @@ def shutdown_pnp_system(state, env=None, rs_env=None):
 
     if rs_env is not None:
         rs_env.close()
+
+    if wrist_rs_env is not None:
+        wrist_rs_env.close()
+
+    if graspgen_client is not None:
+        graspgen_client.close()
 
 
 # ═══════════════════════════════════════════════════
@@ -1322,7 +2184,7 @@ def main():
         print(f"\n[错误] 未捕获异常: {e}")
         traceback.print_exc()
     finally:
-        shutdown_pnp_system(state, env)
+        shutdown_pnp_system(state, env=env, rs_env=rs_env)
 
 
 if __name__ == "__main__":

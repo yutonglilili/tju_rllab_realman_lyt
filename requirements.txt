@@ -16,6 +16,7 @@ numpy==1.26.4
 opencv-python==4.11.0.86
 Pillow>=10,<11
 open3d>=0.18,<0.20
+pyrealsense2==2.55.1.6486
 pytransform3d==3.14.3
 
 openai>=1.30,<2
