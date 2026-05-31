@@ -38,8 +38,8 @@ pnp_skill:
 
   # pick 和 place 三阶段的位姿偏移
   PRE_PICK_X_OFFSET: 0.0
-  PRE_PICK_Y_OFFSET: 0.04
-  PRE_PICK_Z_OFFSET: 0.08
+  PRE_PICK_Y_OFFSET: 0.06
+  PRE_PICK_Z_OFFSET: 0.12
   PICK_X_OFFSET: 0.0
   PICK_Y_OFFSET: 0.0
   PICK_Z_OFFSET: -0.02
@@ -90,7 +90,7 @@ pnp_skill:
   GRASPGEN_MAX_CANDIDATES: 5
   # 调试开关：True 时在候选抓取姿态生成后立即退出，不进入真实抓取执行。
   # run.py 当前读取的是这个 task 配置；后面要恢复抓取，把这里改回 false 即可。
-  DEBUG_EXIT_AFTER_GRASP_CANDIDATES: true
+  DEBUG_EXIT_AFTER_GRASP_CANDIDATES: false
   GRASPGEN_CANDIDATE_PREGRASP_OFFSET_M: 0.10
 
   WRIST_MIN_DEPTH_M: 0.10

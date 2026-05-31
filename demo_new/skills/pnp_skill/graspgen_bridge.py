@@ -27,7 +27,7 @@ for path in (WORKSPACE_ROOT, SDK_PYTHON_ROOT):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from realman.realman_env import T_from_realman_xyzrpy, pose_tcp2eef
+from realman.realman_env import T_from_realman_xyzrpy, realman_xyzrpy_from_T, pose_tcp2eef
 
 try:
     import msgpack
@@ -99,6 +99,10 @@ class GraspFilterConfig:
     direction_rule_min_forward_component: float = 0.30
     direction_rule_min_down_component: float = 0.20
     direction_rule_max_lateral_component: float = 0.45
+    # GraspGen base_link -> Realman TCP correction (see build_grasp_to_tcp_transform).
+    # depth = gripper depth (robotiq_2f_140 = 0.195 m); roll about the approach axis.
+    grasp_to_tcp_depth_m: float = 0.195
+    grasp_to_tcp_roll_deg: float = 0.0
 
 
 @dataclass
@@ -124,6 +128,7 @@ class WristGraspResult:
     grasp_pose_pool_base: np.ndarray
     grasp_pregrasp_pool_base: np.ndarray
     grasp_pose_pool_scores: np.ndarray
+    grasp_eef_xyzrpy_pool: np.ndarray  # (N, 6) eef2base xyzrpy — 定版最终输出
     all_grasps_base: np.ndarray
     all_scores: np.ndarray
     direction_rule_keep_mask: np.ndarray
@@ -763,12 +768,104 @@ def transform_grasp_poses(T_out_from_in: np.ndarray, grasp_poses: np.ndarray) ->
     return np.einsum("ij,njk->nik", T_out_from_in, grasp_poses).astype(np.float32)
 
 
+def build_grasp_to_tcp_transform(depth_m: float, roll_deg: float = 0.0) -> np.ndarray:
+    """Constant correction from a GraspGen grasp pose to the Realman TCP frame.
+
+    GraspGen outputs poses in the gripper base_link frame (approach = local +z,
+    finger closing = local +x) with the origin at the gripper mount. The Realman
+    TCP / gripper-center frame instead uses approach = local +x with the origin at
+    the contact center. Apply as:
+
+        T_tcp2base = grasp2base @ build_grasp_to_tcp_transform(...)
+
+    This mirrors `build_grasp_to_tcp_transform` in
+    GraspGen/scripts/demo_wrist_camera_graspgen.py (verified correct on the real
+    robot). `roll_deg` rotates the TCP frame about the (shared) approach axis to
+    match the physical finger-closing orientation.
+    """
+    C = np.eye(4, dtype=np.float64)
+    # Origin -> gripper center: tool tcp lies along the GraspGen approach (+z) by
+    # the gripper depth. Expressed in base_link frame, so it is not rotated below.
+    C[:3, 3] = [0.0, 0.0, float(depth_m)]
+    # Columns are the Realman TCP basis vectors expressed in the GraspGen frame:
+    #   TCP +x (approach) = GraspGen +z
+    #   TCP +y            = GraspGen +x   (default finger-closing assignment)
+    #   TCP +z            = GraspGen +y
+    R_align = np.array(
+        [[0.0, 1.0, 0.0],
+         [0.0, 0.0, 1.0],
+         [1.0, 0.0, 0.0]],
+        dtype=np.float64,
+    )
+    roll = np.deg2rad(float(roll_deg))
+    # Roll about TCP +x (= approach); preserves the approach mapping.
+    Rx = np.array(
+        [[1.0, 0.0, 0.0],
+         [0.0, np.cos(roll), -np.sin(roll)],
+         [0.0, np.sin(roll), np.cos(roll)]],
+        dtype=np.float64,
+    )
+    C[:3, :3] = R_align @ Rx
+    return C.astype(np.float32)
+
+
+def level_gripper_x_axis(grasp_pose_base: np.ndarray, grasp_depth_m: float = 0.195) -> np.ndarray:
+    """对 GraspGen base_link 姿态做夹爪 x 轴水平矫正。
+
+    GraspGen 夹爪坐标系:
+      z = approach（接近方向）
+      x = 闭合方向（两指连线）
+      y = 夹爪平面法线
+
+    矫正方式: 绕 y 轴旋转使 x 轴水平（x[2]=0）。
+    以 TCP（手指中心）为旋转中心，保证矫正后夹爪中心不移动。
+    """
+    R = np.array(grasp_pose_base[:3, :3], dtype=np.float64)
+    origin = np.array(grasp_pose_base[:3, 3], dtype=np.float64)
+    x_axis = R[:, 0].copy()
+    z_axis = R[:, 2].copy()
+
+    # 绕 y 轴旋转角 θ 使 x_new[2] = 0
+    # x_new = cos(θ)*x - sin(θ)*z => x_new[2] = cos(θ)*x[2] - sin(θ)*z[2] = 0
+    theta = np.arctan2(x_axis[2], z_axis[2])
+
+    c, s = np.cos(theta), np.sin(theta)
+    x_new = c * x_axis - s * z_axis
+    z_new = s * x_axis + c * z_axis
+
+    # 选择 approach 朝下的解（z_new[2] < 0），否则取另一个解（加 π）
+    if z_new[2] > 0:
+        theta = theta + np.pi
+        c, s = np.cos(theta), np.sin(theta)
+        x_new = c * x_axis - s * z_axis
+        z_new = s * x_axis + c * z_axis
+    # y 不变
+
+    R_new = R.copy()
+    R_new[:, 0] = x_new
+    R_new[:, 2] = z_new
+
+    # 以 TCP 为旋转中心：TCP = origin + depth * z_old，保持不动
+    tcp_pos = origin + grasp_depth_m * z_axis
+    new_origin = tcp_pos - grasp_depth_m * z_new
+
+    result = grasp_pose_base.copy().astype(np.float64)
+    result[:3, :3] = R_new
+    result[:3, 3] = new_origin
+    return result.astype(np.float32)
+
+
 def build_pregrasp_pose_from_grasp(
     grasp_pose: np.ndarray,
     retreat_m: float,
 ) -> np.ndarray:
+    """Retreat behind the grasp along the approach axis to get a pre-grasp pose.
+
+    Expects `grasp_pose` in the Realman TCP convention (approach = local +x), so
+    the retreat is along local -x.
+    """
     retreat_transform = np.eye(4, dtype=np.float32)
-    retreat_transform[2, 3] = -float(retreat_m)
+    retreat_transform[0, 3] = -float(retreat_m)
     return (grasp_pose @ retreat_transform).astype(np.float32)
 
 
@@ -873,6 +970,7 @@ def infer_pick_grasp_candidates_from_wrist(
             grasp_pose_pool_base=np.zeros((0, 4, 4), dtype=np.float32),
             grasp_pregrasp_pool_base=np.zeros((0, 4, 4), dtype=np.float32),
             grasp_pose_pool_scores=empty,
+            grasp_eef_xyzrpy_pool=np.zeros((0, 6), dtype=np.float64),
             all_grasps_base=np.zeros((0, 4, 4), dtype=np.float32),
             all_scores=empty,
             direction_rule_keep_mask=np.zeros((0,), dtype=bool),
@@ -905,14 +1003,50 @@ def infer_pick_grasp_candidates_from_wrist(
         cfg=grasp_filter_cfg,
     )
 
+    # === 定版流程 ===
+    # 步骤 2 已完成: direction rule 在矫正前过滤（上面的 filter_grasps_by_camera_direction_rule）
+    # 步骤 3: 置信度排序 + 取 top-5（在通过朝向筛选的姿态里）
     kept_indices = np.flatnonzero(direction_keep_mask)
     if len(kept_indices) > 0:
+        # grasps_base 已按 score 降序排列，kept_indices 保持该顺序
         kept_indices = kept_indices[: int(grasp_filter_cfg.max_candidates)]
-        grasp_pose_pool_base = grasps_base[kept_indices]
-        grasp_pose_pool_scores = scores[kept_indices]
+        top_grasps_base = grasps_base[kept_indices].copy()
+        top_scores = scores[kept_indices].copy()
     else:
+        top_grasps_base = np.zeros((0, 4, 4), dtype=np.float32)
+        top_scores = np.zeros((0,), dtype=np.float32)
+
+    # 步骤 4: 对 top-5 各做"夹爪 x 轴水平矫正"（在 GraspGen base_link 坐标系）
+    grasp_depth_m = float(grasp_filter_cfg.grasp_to_tcp_depth_m)
+    leveled_grasps_base = np.asarray(
+        [level_gripper_x_axis(g, grasp_depth_m=grasp_depth_m) for g in top_grasps_base],
+        dtype=np.float32,
+    ) if len(top_grasps_base) > 0 else np.zeros((0, 4, 4), dtype=np.float32)
+
+    # 步骤 6: 格式转换 — 矫正后走 grasp_to_tcp → realman_xyzrpy_from_T → pose_tcp2eef
+    grasp_to_tcp = build_grasp_to_tcp_transform(
+        depth_m=grasp_filter_cfg.grasp_to_tcp_depth_m,
+        roll_deg=grasp_filter_cfg.grasp_to_tcp_roll_deg,
+    )
+
+    eef_xyzrpy_pool = []
+    grasp_pose_pool_base = []
+    for leveled_g in leveled_grasps_base:
+        T_tcp2base = (leveled_g @ grasp_to_tcp).astype(np.float64)
+        tcp_xyzrpy = realman_xyzrpy_from_T(T_tcp2base)
+        eef_xyzrpy = pose_tcp2eef(tcp_xyzrpy)
+        eef_xyzrpy_pool.append(eef_xyzrpy)
+        grasp_pose_pool_base.append(T_tcp2base.astype(np.float32))
+
+    if len(eef_xyzrpy_pool) > 0:
+        grasp_eef_xyzrpy_pool = np.asarray(eef_xyzrpy_pool, dtype=np.float64)
+        grasp_pose_pool_base = np.asarray(grasp_pose_pool_base, dtype=np.float32)
+    else:
+        grasp_eef_xyzrpy_pool = np.zeros((0, 6), dtype=np.float64)
         grasp_pose_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
-        grasp_pose_pool_scores = np.zeros((0,), dtype=np.float32)
+
+    # 步骤 5: 仍按原始置信度顺序（已保持）
+    grasp_pose_pool_scores = top_scores
 
     grasp_pregrasp_pool_base = np.asarray(
         [
@@ -939,7 +1073,9 @@ def infer_pick_grasp_candidates_from_wrist(
         "num_scene_points": int(len(scene_pc_base)),
         "num_all_grasps": int(len(grasps_base)),
         "num_direction_rule_kept": int(direction_keep_mask.sum()),
-        "graspgen_pose_frame": "tcp",
+        "graspgen_pose_frame": "eef2base_xyzrpy (leveled → grasp_to_tcp → tcp2eef)",
+        "grasp_to_tcp_depth_m": float(grasp_filter_cfg.grasp_to_tcp_depth_m),
+        "grasp_to_tcp_roll_deg": float(grasp_filter_cfg.grasp_to_tcp_roll_deg),
         "direction_rule_metrics": {
             key: value.astype(float).tolist()
             for key, value in direction_metrics.items()
@@ -955,6 +1091,7 @@ def infer_pick_grasp_candidates_from_wrist(
         grasp_pose_pool_base=grasp_pose_pool_base,
         grasp_pregrasp_pool_base=grasp_pregrasp_pool_base,
         grasp_pose_pool_scores=grasp_pose_pool_scores,
+        grasp_eef_xyzrpy_pool=grasp_eef_xyzrpy_pool,
         all_grasps_base=grasps_base,
         all_scores=scores,
         direction_rule_keep_mask=direction_keep_mask,

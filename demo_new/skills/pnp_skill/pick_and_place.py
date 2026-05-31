@@ -266,6 +266,12 @@ def _build_grasp_filter_config(config) -> GraspFilterConfig:
         direction_rule_max_lateral_component=float(
             getattr(config, "GRASPGEN_DIRECTION_RULE_MAX_LATERAL_COMPONENT", 0.45)
         ),
+        grasp_to_tcp_depth_m=float(
+            getattr(config, "GRASPGEN_GRASP_TO_TCP_DEPTH_M", 0.195)
+        ),
+        grasp_to_tcp_roll_deg=float(
+            getattr(config, "GRASPGEN_GRASP_TO_TCP_ROLL_DEG", 0.0)
+        ),
     )
 
 
@@ -373,6 +379,7 @@ class SharedState:
         self.grasp_pose_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
         self.grasp_pregrasp_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
         self.grasp_pose_pool_scores = np.zeros((0,), dtype=np.float32)
+        self.grasp_eef_xyzrpy_pool = np.zeros((0, 6), dtype=np.float64)
         self.selected_grasp_pose_base = None
         self.selected_grasp_score = None
         self.grasp_plan_source = None
@@ -434,6 +441,7 @@ class SharedState:
             self.grasp_pose_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
             self.grasp_pregrasp_pool_base = np.zeros((0, 4, 4), dtype=np.float32)
             self.grasp_pose_pool_scores = np.zeros((0,), dtype=np.float32)
+            self.grasp_eef_xyzrpy_pool = np.zeros((0, 6), dtype=np.float64)
             self.selected_grasp_pose_base = None
             self.selected_grasp_score = None
             self.grasp_plan_source = None
@@ -494,6 +502,7 @@ def _clear_grasp_outputs_locked(state):
     state.grasp_pose_pool_base = _empty_grasp_pose_pool()
     state.grasp_pregrasp_pool_base = _empty_grasp_pose_pool()
     state.grasp_pose_pool_scores = _empty_grasp_score_pool()
+    state.grasp_eef_xyzrpy_pool = np.zeros((0, 6), dtype=np.float64)
     state.selected_grasp_pose_base = None
     state.selected_grasp_score = None
     state.grasp_plan_source = None
@@ -1098,6 +1107,7 @@ def perception_thread(
                         state.grasp_pose_pool_base = wrist_result.grasp_pose_pool_base.copy()
                         state.grasp_pregrasp_pool_base = wrist_result.grasp_pregrasp_pool_base.copy()
                         state.grasp_pose_pool_scores = wrist_result.grasp_pose_pool_scores.copy()
+                        state.grasp_eef_xyzrpy_pool = wrist_result.grasp_eef_xyzrpy_pool.copy()
                         _set_wrist_mode_locked(state, False)
                         state.wrist_result_ready.set()
 
