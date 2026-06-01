@@ -798,7 +798,7 @@ def try_execute_grasp_candidate(state, env, grasp_T_base, pregrasp_T_base, score
             "pose": grasp_pose_tcp,
             "gripper": config.GRIPPER_CLOSE,
             "tag": 1,
-            "motion": "linear",
+            "motion": "pose",
             "wait_gripper": True,
         },
         {

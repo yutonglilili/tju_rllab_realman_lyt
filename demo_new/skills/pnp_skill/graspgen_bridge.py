@@ -817,7 +817,9 @@ def level_gripper_x_axis(grasp_pose_base: np.ndarray, grasp_depth_m: float = 0.1
       x = 闭合方向（两指连线）
       y = 夹爪平面法线
 
-    矫正方式: 绕 y 轴旋转使 x 轴水平（x[2]=0）。
+    矫正方式:
+      1. 绕 y 轴旋转使 x 轴水平（x[2]=0），约束 approach 朝下
+      2. 绕 z 轴做镜像约束：确保 x 轴正方向大致朝前（base -y 方向）
     以 TCP（手指中心）为旋转中心，保证矫正后夹爪中心不移动。
     """
     R = np.array(grasp_pose_base[:3, :3], dtype=np.float64)
@@ -839,11 +841,16 @@ def level_gripper_x_axis(grasp_pose_base: np.ndarray, grasp_depth_m: float = 0.1
         c, s = np.cos(theta), np.sin(theta)
         x_new = c * x_axis - s * z_axis
         z_new = s * x_axis + c * z_axis
-    # y 不变
 
-    R_new = R.copy()
-    R_new[:, 0] = x_new
-    R_new[:, 2] = z_new
+    y_new = R[:, 1].copy()
+
+    # 镜像约束：x 轴正方向应大致朝前（base -y 方向），即 x_new[1] < 0
+    # 如果 x_new[1] > 0（朝后），绕 z 轴旋转 180°：x → -x, y → -y
+    if x_new[1] > 0:
+        x_new = -x_new
+        y_new = -y_new
+
+    R_new = np.column_stack([x_new, y_new, z_new])
 
     # 以 TCP 为旋转中心：TCP = origin + depth * z_old，保持不动
     tcp_pos = origin + grasp_depth_m * z_axis

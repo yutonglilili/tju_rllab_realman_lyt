@@ -46,7 +46,7 @@ DEFAULT_GRASPGEN_SERVER_SCRIPT = os.path.join(
     "client-server",
     "graspgen_server.py",
 )
-DEFAULT_INSTRUCTION = "把魔方放到粉色盘子里。"
+DEFAULT_INSTRUCTION = "把所有水果放到蓝色盘子里，把所有玩具放到粉色盘子里。"
 
 
 def parse_args():

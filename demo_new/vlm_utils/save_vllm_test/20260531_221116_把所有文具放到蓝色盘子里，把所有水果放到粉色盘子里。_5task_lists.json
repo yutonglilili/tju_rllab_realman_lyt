@@ -1,0 +1,7 @@
+[
+  [{"pick": "glue stick", "place": "blue tray"}, {"pick": "pen", "place": "blue tray"}, {"pick": "correction tape", "place": "blue tray"}, {"pick": "banana", "place": "pink tray"}, {"pick": "orange", "place": "pink tray"}, {"pick": "strawberry", "place": "pink tray"}],
+  [{"pick": "胶棒", "place": "蓝色盘子"}, {"pick": "笔", "place": "蓝色盘子"}, {"pick": "修正带", "place": "蓝色盘子"}, {"pick": "香蕉", "place": "粉色盘子"}, {"pick": "橙子", "place": "粉色盘子"}, {"pick": "草莓", "place": "粉色盘子"}],
+  [{"pick": "胶水", "place": "蓝色盘子"}, {"pick": "修正带", "place": "蓝色盘子"}, {"pick": "笔", "place": "蓝色盘子"}, {"pick": "香蕉", "place": "粉色盘子"}, {"pick": "橙子", "place": "粉色盘子"}, {"pick": "草莓", "place": "粉色盘子"}],
+  [{"pick": "yellow glue stick", "place": "blue tray"}, {"pick": "white glue stick", "place": "blue tray"}, {"pick": "green marker", "place": "blue tray"}, {"pick": "banana", "place": "pink tray"}, {"pick": "orange", "place": "pink tray"}, {"pick": "strawberry", "place": "pink tray"}],
+  [{"pick": "yellow glue stick", "place": "blue tray"}, {"pick": "white glue stick", "place": "blue tray"}, {"pick": "green marker", "place": "blue tray"}, {"pick": "banana", "place": "pink tray"}, {"pick": "orange", "place": "pink tray"}, {"pick": "strawberry", "place": "pink tray"}]
+]

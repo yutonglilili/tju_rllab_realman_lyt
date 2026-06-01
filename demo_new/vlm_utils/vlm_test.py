@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image
 import cv2
 
-from multi_pointing_vllm_get_point_utils_qwen import *
-# from vllm_from_api_key import *
+# from multi_pointing_vllm_get_point_utils_qwen import *
+from vllm_from_api_key import *
 
 
 # 配置
@@ -25,10 +25,12 @@ from multi_pointing_vllm_get_point_utils_qwen import *
 # INSTRUCTION = "帮我把烤苹果和香蕉,定时20分钟。"
 # INSTRUCTION = "帮我把苹果和香蕉从空气炸锅里取出来放到盘子上。"
 # INSTRUCTION = "橘子和魔方的中间"
-# INSTRUCTION = "把所有文具放到蓝色盘子里，把所有水果放到浅黄色盘子里。"
+
 # INSTRUCTION = "把和罐头放到蓝色盘子里。"
 
-IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/放橡皮1.png"
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果.png"
+INSTRUCTION = "把所有玩具放到蓝色盘子里，把所有水果放到粉色盘子里。"
+
 TEST_OBJECT_NAME = "eraser"
 TEST_CONTAINER_NAME = "blue plate"
 
@@ -412,8 +414,8 @@ def test_check_place_success_vllm_multiple(object_name, container_name, image_pa
     print("\n========== DONE ==========\n")
 
 if __name__ == "__main__":
-    # test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     # test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     # test_generate_air_fryer_subtasks(INSTRUCTION,IMAGE_PATH,SAVE_DIR,NUM_SAMPLES)
     # test_check_grasp_success_vllm_multiple(TEST_OBJECT_NAME, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
-    test_check_place_success_vllm_multiple(TEST_OBJECT_NAME, TEST_CONTAINER_NAME, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    # test_check_place_success_vllm_multiple(TEST_OBJECT_NAME, TEST_CONTAINER_NAME, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
