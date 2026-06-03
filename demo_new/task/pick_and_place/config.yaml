@@ -38,7 +38,7 @@ pnp_skill:
 
   # pick 和 place 三阶段的位姿偏移
   PRE_PICK_X_OFFSET: 0.0
-  PRE_PICK_Y_OFFSET: 0.06
+  PRE_PICK_Y_OFFSET: 0.08
   PRE_PICK_Z_OFFSET: 0.12
   PICK_X_OFFSET: 0.0
   PICK_Y_OFFSET: 0.0

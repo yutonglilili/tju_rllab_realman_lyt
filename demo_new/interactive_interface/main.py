@@ -105,11 +105,12 @@ def _refresh_status_outputs(gr: Any) -> tuple[Any, ...]:
 
 
 def _refresh_all_outputs(gr: Any) -> tuple[Any, ...]:
-    status_markdown, logs_text, camera_frame = APP.snapshot_full()
+    status_markdown, logs_text, camera_frame, wrist_frame = APP.snapshot_full()
     return (
         _diff_text_output(gr, "status", status_markdown),
         _diff_text_output(gr, "logs", logs_text),
         camera_frame,
+        wrist_frame,
     )
 
 
@@ -193,6 +194,7 @@ def build_demo() -> Any:
                 components["current_status_output"],
                 components["recent_actions_output"],
                 components["camera_image_output"],
+                components["wrist_image_output"],
             ],
             api_name=False
         )
@@ -217,6 +219,7 @@ def build_demo() -> Any:
                 components["current_status_output"],
                 components["recent_actions_output"],
                 components["camera_image_output"],
+                components["wrist_image_output"],
             ],
             api_name=False
         )
@@ -227,6 +230,7 @@ def build_demo() -> Any:
                 components["current_status_output"],
                 components["recent_actions_output"],
                 components["camera_image_output"],
+                components["wrist_image_output"],
             ],
             api_name=False
         )
@@ -237,6 +241,7 @@ def build_demo() -> Any:
                 components["current_status_output"],
                 components["recent_actions_output"],
                 components["camera_image_output"],
+                components["wrist_image_output"],
             ],
             api_name=False
         )
@@ -247,6 +252,7 @@ def build_demo() -> Any:
                 components["current_status_output"],
                 components["recent_actions_output"],
                 components["camera_image_output"],
+                components["wrist_image_output"],
             ],
             every=0.5,
             api_name=False

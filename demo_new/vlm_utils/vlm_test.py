@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image
 import cv2
 
-# from multi_pointing_vllm_get_point_utils_qwen import *
-from vllm_from_api_key import *
+from multi_pointing_vllm_get_point_utils_qwen import *
+# from vllm_from_api_key import *
 
 
 # 配置
@@ -28,7 +28,7 @@ from vllm_from_api_key import *
 
 # INSTRUCTION = "把和罐头放到蓝色盘子里。"
 
-IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果.png"
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果3.png"
 INSTRUCTION = "把所有玩具放到蓝色盘子里，把所有水果放到粉色盘子里。"
 
 TEST_OBJECT_NAME = "eraser"

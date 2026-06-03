@@ -28,6 +28,7 @@ from demo_new.skills.tools.utils import make_target_T, make_lift_T
 
 from demo_new.skills.air_fryer_skill.air_fryer import open_action, close_action, rotate_action
 from demo_new.skills.pnp_skill.pick_and_place import init_state, start_pnp_system, run_single_task
+from demo_new.skills.pnp_skill.graspgen_runtime import build_wrist_runtime
 
 # =========================================================
 # helper
@@ -364,12 +365,21 @@ def main():
         task_config_path=task_config_path
     )
 
+    # =====================================================
+    # init wrist GraspGen runtime
+    # =====================================================
+
+    wrist_runtime = build_wrist_runtime(state.config)
+
     start_pnp_system(
         state,
         env,
         rs_env,
         cam_results,
-        home_T_tcp2base
+        home_T_tcp2base,
+        wrist_rs_env=wrist_runtime.wrist_rs_env,
+        graspgen_client=wrist_runtime.graspgen_client,
+        wrist_handeye_config=wrist_runtime.wrist_handeye_config,
     )
 
     # =====================================================
@@ -430,6 +440,8 @@ def main():
         print("\n[CLEANUP] stop threads")
 
         state.stop_all.set()
+
+        wrist_runtime.shutdown()
 
 # =========================================================
 

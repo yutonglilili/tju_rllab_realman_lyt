@@ -164,24 +164,6 @@ class RealmanDriver:
             ret: SDK 返回码(0 表示成功)
         """
         ret = self.arm.rm_movej(joint, SYNC_MOVEJ_SPEED_PERCENT, 0, 0, 1)
-        if ret == 0:
-            return ret
-
-        # ret==1: 控制器返回 false。若处于故障态，清错后同位姿重试 1 次。
-        if ret == 1 and self.is_faulted():
-            self.recover()
-            ret = self.arm.rm_movej(joint, SYNC_MOVEJ_SPEED_PERCENT, 0, 0, 1)
-            if ret == 0:
-                return ret
-
-        # ret==-1/-2: 通信问题，保留原有重试次数。
-        if ret in (-1, -2):
-            for _ in range(100):
-                ret = self.arm.rm_movej(joint, SYNC_MOVEJ_SPEED_PERCENT, 0, 0, 1)
-                if ret == 0:
-                    return ret
-                time.sleep(0.02)
-
         return ret
 
     def _move_pose_with_retry(self, pose, *, linear: bool):
@@ -189,25 +171,12 @@ class RealmanDriver:
         speed_percent = SYNC_MOVEL_SPEED_PERCENT if linear else SYNC_MOVEP_SPEED_PERCENT
         blend_radius = 0 if linear else 1
 
-        def _send():
-            return move_fn(pose, speed_percent, r=blend_radius, connect=0, block=1)
-
-        ret = _send()
+        ret = move_fn(pose, speed_percent, r=blend_radius, connect=0, block=1)
         if ret == 0:
             return ret
 
-        # ret==1: 控制器返回 false(规划失败/不可达/故障态)。
-        # 若处于故障态，清错后同位姿只重试 1 次；仍失败则判定为真不可达，
-        # 直接返回交给上层 replan，不再死磕同一位姿。
-        if ret == 1:
-            if self.is_faulted():
-                self.recover()
-                ret = _send()
-            return ret
-
-        # ret==-1/-2: 通信问题，保留原有重试次数。
         for _ in range(100):
-            ret = _send()
+            ret = move_fn(pose, speed_percent, r=blend_radius, connect=0, block=1)
             if ret == 0:
                 return ret
             time.sleep(0.02)
@@ -225,12 +194,20 @@ class RealmanDriver:
             ret: SDK 返回码
         """
         ret = self._move_pose_with_retry(pose, linear=False)
+        if ret == 0:
+            return ret
         if ret != 0:
+            for i in range(100):
+                ret = self.arm.rm_movej_p(pose, SYNC_MOVEP_SPEED_PERCENT, r=1, connect=0, block=1)
+                if ret == 0:
+                    print(f"movep 第 {i+1} 次才解出来。")
+                    return ret
+                time.sleep(0.02)
             print("================================================")
             print(f"pose: {pose}")
-            print(f"movep failed, ret={ret}")
+            print(f"movep挂了，解了{i}次解不出来。")
             print("================================================")
-        return ret
+            return ret
 
     def movel(self, pose):
         """Cartesian linear motion (blocking)."""
@@ -238,7 +215,7 @@ class RealmanDriver:
         if ret != 0:
             print("================================================")
             print(f"pose: {pose}")
-            print(f"movel failed, ret={ret}")
+            print("movel failed after retries.")
             print("================================================")
         return ret
 
@@ -269,47 +246,6 @@ class RealmanDriver:
             SDK 返回码，0 表示成功。
         """
         return self.arm.rm_set_arm_stop()
-
-    # =========================
-    # 故障检测与恢复
-    # =========================
-
-    def is_faulted(self) -> bool:
-        """
-        读取关节错误标志，判断控制器是否处于故障/错误态。
-
-        Returns:
-            bool: 任一关节 err_flag 非 0 视为故障态。读取失败时返回 False，
-                  避免在通信异常时误判为故障而触发不必要的清除流程。
-        """
-        try:
-            info = self.arm.rm_get_joint_err_flag()
-        except Exception:
-            return False
-
-        if not isinstance(info, dict) or info.get("return_code", -1) != 0:
-            return False
-
-        return any(int(flag) != 0 for flag in info.get("err_flag", []))
-
-    def recover(self, settle_s: float = 0.3) -> bool:
-        """
-        清除控制器系统错误，使后续运动指令能够恢复执行。
-
-        Args:
-            settle_s: 清除后等待控制器稳定的时间(秒)。
-
-        Returns:
-            bool: True 表示清除成功且当前已无故障标志。
-        """
-        ret = self.arm.rm_clear_system_err()
-        time.sleep(settle_s)
-        faulted = self.is_faulted()
-        if ret == 0 and not faulted:
-            print("[RealmanDriver] ✅ 控制器故障已清除")
-            return True
-        print(f"[RealmanDriver] ⚠️ 清除故障未完全成功 (ret={ret}, faulted={faulted})")
-        return False
 
     # =========================
     # 状态获取
@@ -551,10 +487,6 @@ class SyncController:
         state = self.get_state()
 
         if move_ret not in (None, 0):
-            # 抛错前先尝试清除控制器故障态，使上层 replan / 换候选 / 下一个任务
-            # 面对的是已恢复的控制器，避免故障态导致后续指令持续被拒。
-            if move_ret == 1 and self.driver.is_faulted():
-                self.driver.recover()
             raise RuntimeError(f"机器人运动失败，ret={move_ret}")
 
         if "gripper" in action:
@@ -603,11 +535,6 @@ class SyncController:
         """
         target_joint = np.array([90, 0, 0, -90, 0, -90, 60])
         target_joint_rad = np.radians(target_joint)
-
-        # 复位前先清除可能存在的控制器故障态，否则故障态下 movej 同样会被拒绝，
-        # 导致脚本卡死在复位阶段无法恢复。
-        if self.driver.is_faulted():
-            self.driver.recover()
 
         self.driver.movej(target_joint)
 

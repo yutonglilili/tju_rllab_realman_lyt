@@ -59,13 +59,28 @@ def execute_roast_task(context: TaskExecutionContext) -> dict[str, Any]:
 
     state = init_state(task_config_path=str(ROAST_CONFIG_PATH))
     runtime.attach_task_state(state)
-    start_pnp_system(
-        state,
-        resources.env,
-        resources.rs_env,
-        resources.cam_results,
-        resources.home_T_tcp2base,
-    )
+
+    wrist_runtime = getattr(resources, "wrist_runtime", None)
+    if wrist_runtime is not None:
+        start_pnp_system(
+            state,
+            resources.env,
+            resources.rs_env,
+            resources.cam_results,
+            resources.home_T_tcp2base,
+            wrist_rs_env=wrist_runtime.wrist_rs_env,
+            graspgen_client=wrist_runtime.graspgen_client,
+            wrist_handeye_config=wrist_runtime.wrist_handeye_config,
+        )
+    else:
+        runtime.log("GraspGen not enabled; using heuristic grasping.")
+        start_pnp_system(
+            state,
+            resources.env,
+            resources.rs_env,
+            resources.cam_results,
+            resources.home_T_tcp2base,
+        )
 
     try:
         _ensure_not_stopped(runtime, "Air fryer planning")

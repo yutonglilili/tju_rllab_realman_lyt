@@ -65,12 +65,20 @@ def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, 
                 start_button = gr.Button("开始执行", variant="primary")
                 stop_button = gr.Button("停止", variant="stop")
 
-            camera_image_output = gr.Image(
-                label="当前画面",
-                type="numpy",
-                interactive=False,
-                height=440,
-            )
+            with gr.Row():
+                camera_image_output = gr.Image(
+                    label="第三视角画面",
+                    type="numpy",
+                    interactive=False,
+                    height=440,
+                )
+
+                wrist_image_output = gr.Image(
+                    label="腕部相机画面",
+                    type="numpy",
+                    interactive=False,
+                    height=440,
+                )
 
             current_status_output = gr.Textbox(
                 label="当前状态",
@@ -97,6 +105,7 @@ def build_ui(gr: Any, task_definitions: dict[str, Any]) -> tuple[Any, dict[str, 
             "stop_button": stop_button,
             "current_status_output": current_status_output,
             "camera_image_output": camera_image_output,
+            "wrist_image_output": wrist_image_output,
             "recent_actions_output": recent_actions_output,
         }
 

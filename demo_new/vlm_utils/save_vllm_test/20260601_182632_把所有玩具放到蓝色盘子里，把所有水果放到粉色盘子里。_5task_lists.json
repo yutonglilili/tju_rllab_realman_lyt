@@ -1,0 +1,7 @@
+[
+  [{"pick": "red apple", "place": "blue plate"}, {"pick": "orange", "place": "blue plate"}, {"pick": "banana", "place": "blue plate"}, {"pick": "small toy animal", "place": "pink plate"}, {"pick": "toy car", "place": "pink plate"}, {"pick": "cube toy", "place": "pink plate"}],
+  [{"pick": "toy car", "place": "blue plate"}, {"pick": "block", "place": "blue plate"}, {"pick": "toy animal", "place": "blue plate"}, {"pick": "orange", "place": "pink plate"}, {"pick": "apple", "place": "pink plate"}, {"pick": "banana", "place": "pink plate"}],
+  [{"pick": "small toy", "place": "blue plate"}, {"pick": "black toy car", "place": "blue plate"}, {"pick": "red toy cube", "place": "blue plate"}, {"pick": "orange", "place": "pink plate"}, {"pick": "red apple", "place": "pink plate"}, {"pick": "banana", "place": "pink plate"}],
+  [{"pick": "small toy animal", "place": "blue plate"}, {"pick": "black car", "place": "blue plate"}, {"pick": "toy cube", "place": "blue plate"}, {"pick": "orange", "place": "pink plate"}, {"pick": "red apple", "place": "pink plate"}, {"pick": "banana", "place": "pink plate"}],
+  [{"pick": "toy car", "place": "blue plate"}, {"pick": "block toy", "place": "blue plate"}, {"pick": "orange", "place": "pink plate"}, {"pick": "red apple", "place": "pink plate"}, {"pick": "banana", "place": "pink plate"}]
+]

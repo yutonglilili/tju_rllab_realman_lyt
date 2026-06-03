@@ -7,6 +7,7 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
+from interactive_interface.task_adapters.common import PICK_AND_PLACE_CONFIG_PATH
 from interactive_interface.task_interface import execute_task, get_task_definition
 
 
@@ -22,15 +23,16 @@ def _humanize_task_item(task: Any) -> str:
 
 
 class _CameraEnvProxy:
-    def __init__(self, runtime: "AppRuntime", wrapped_env: Any) -> None:
+    def __init__(self, runtime: "AppRuntime", wrapped_env: Any, cache_fn: Any) -> None:
         self._runtime = runtime
         self._wrapped_env = wrapped_env
+        self._cache_fn = cache_fn
         self._step_lock = threading.Lock()
 
     def step(self, *args: Any, **kwargs: Any) -> Any:
         with self._step_lock:
             obs = self._wrapped_env.step(*args, **kwargs)
-        self._runtime._cache_camera_observation(obs)
+        self._cache_fn(obs)
         return obs
 
     def close(self) -> None:
@@ -52,8 +54,11 @@ class AppRuntime:
         self.rs_env = None
         self.cam_results = None
         self.home_T_tcp2base = None
+        self.wrist_runtime = None
         self.last_camera_frame = None
         self.last_camera_error = ""
+        self.last_wrist_frame = None
+        self.last_wrist_error = ""
         self.task_state = None
         self.stop_requested = threading.Event()
         self.worker_thread: threading.Thread | None = None
@@ -88,6 +93,12 @@ class AppRuntime:
                 self.task_state = None
 
     def _cache_camera_observation(self, obs: Any) -> Any:
+        return self._cache_observation(obs, which="fixed")
+
+    def _cache_wrist_observation(self, obs: Any) -> Any:
+        return self._cache_observation(obs, which="wrist")
+
+    def _cache_observation(self, obs: Any, *, which: str) -> Any:
         frame = None
         if isinstance(obs, dict):
             frame = obs.get("rgb")
@@ -96,20 +107,27 @@ class AppRuntime:
             return None
 
         with self.lock:
-            self.last_camera_frame = frame
-            self.last_camera_error = ""
+            if which == "wrist":
+                self.last_wrist_frame = frame
+                self.last_wrist_error = ""
+            else:
+                self.last_camera_frame = frame
+                self.last_camera_error = ""
 
         return frame
 
-    def _read_camera_frame(self, rs_env: Any, cached_frame: Any) -> Any:
+    def _read_camera_frame(self, rs_env: Any, cached_frame: Any, *, which: str = "fixed") -> Any:
         try:
             obs = rs_env.step()
         except Exception as exc:
             with self.lock:
-                self.last_camera_error = f"{type(exc).__name__}: {exc}"
+                if which == "wrist":
+                    self.last_wrist_error = f"{type(exc).__name__}: {exc}"
+                else:
+                    self.last_camera_error = f"{type(exc).__name__}: {exc}"
             return cached_frame
 
-        frame = self._cache_camera_observation(obs)
+        frame = self._cache_observation(obs, which=which)
         if frame is None:
             return cached_frame
         return frame
@@ -161,13 +179,27 @@ class AppRuntime:
     def _close_resources(self) -> None:
         env = self.env
         rs_env = self.rs_env
+        wrist_runtime = self.wrist_runtime
 
         self.env = None
         self.rs_env = None
         self.cam_results = None
         self.home_T_tcp2base = None
+        self.wrist_runtime = None
         self.initialized = False
         self.runtime_signature = None
+
+        if wrist_runtime is not None:
+            wrist_cam = getattr(wrist_runtime, "wrist_rs_env", None)
+            if wrist_cam is not None:
+                try:
+                    wrist_cam.close()
+                except Exception:
+                    pass
+            try:
+                wrist_runtime.shutdown()
+            except Exception:
+                pass
 
         if rs_env is not None:
             try:
@@ -230,13 +262,20 @@ class AppRuntime:
             self.log("运行时初始化失败。")
             return False
 
-        rs_env = _CameraEnvProxy(self, rs_env)
+        rs_env = _CameraEnvProxy(self, rs_env, self._cache_camera_observation)
+
+        wrist_runtime = self._build_wrist_runtime()
+        if wrist_runtime is not None and wrist_runtime.wrist_rs_env is not None:
+            wrist_runtime.wrist_rs_env = _CameraEnvProxy(
+                self, wrist_runtime.wrist_rs_env, self._cache_wrist_observation
+            )
 
         with self.lock:
             self.env = env
             self.rs_env = rs_env
             self.cam_results = cam_results
             self.home_T_tcp2base = home_T_tcp2base
+            self.wrist_runtime = wrist_runtime
             self.runtime_signature = signature
             self.initialized = True
             self.initialization_error = ""
@@ -245,6 +284,30 @@ class AppRuntime:
         self.log("运行时初始化成功。")
         self.get_camera_frame(force_refresh=True)
         return True
+
+    def _build_wrist_runtime(self) -> Any:
+        """Start the shared wrist-camera + GraspGen runtime for fine grasping.
+
+        Fail-soft: if GraspGen cannot be started (server, deps, or wrist camera),
+        log the reason and return None so the pnp pipeline degrades to heuristic
+        picking instead of blocking the whole interface.
+        """
+        try:
+            from demo_new.skills.pnp_skill.graspgen_runtime import build_wrist_runtime
+            from demo_new.skills.pnp_skill.pick_and_place import init_state
+        except Exception as exc:
+            self.log(f"GraspGen 依赖缺失，回退启发式抓取：{type(exc).__name__}: {exc}")
+            return None
+
+        try:
+            probe_state = init_state(task_config_path=str(PICK_AND_PLACE_CONFIG_PATH))
+            wrist_runtime = build_wrist_runtime(probe_state.config)
+        except Exception as exc:
+            self.log(f"GraspGen 启动失败，回退启发式抓取：{type(exc).__name__}: {exc}")
+            return None
+
+        self.log("Wrist GraspGen 精抓取分支已就绪。")
+        return wrist_runtime
 
     def shutdown_runtime(self, reason: str, *, allow_busy: bool, log_message: bool = True) -> bool:
         with self.lock:
@@ -275,6 +338,7 @@ class AppRuntime:
                 rs_env=self.rs_env,
                 cam_results=self.cam_results,
                 home_T_tcp2base=self.home_T_tcp2base,
+                wrist_runtime=self.wrist_runtime,
             )
 
     def request_stop(self) -> None:
@@ -326,6 +390,24 @@ class AppRuntime:
             return cached_frame
 
         return self._read_camera_frame(rs_env, cached_frame)
+
+    def get_wrist_frame(self, *, force_refresh: bool = False) -> Any:
+        with self.lock:
+            initialized = self.initialized
+            busy = self.is_busy()
+            wrist_runtime = self.wrist_runtime
+            cached_frame = self.last_wrist_frame
+
+        wrist_rs_env = getattr(wrist_runtime, "wrist_rs_env", None) if wrist_runtime else None
+
+        if not initialized or wrist_rs_env is None:
+            return cached_frame
+
+        # 任务运行时腕部相机由感知线程独占，只回放它缓存的最新帧，避免抢占。
+        if busy:
+            return cached_frame
+
+        return self._read_camera_frame(wrist_rs_env, cached_frame, which="wrist")
 
     def _snapshot_task_state(self) -> dict[str, Any]:
         with self.lock:
@@ -380,10 +462,11 @@ class AppRuntime:
 
         return "\n".join(status_lines), logs_text
 
-    def snapshot_full(self) -> tuple[str, str, Any]:
+    def snapshot_full(self) -> tuple[str, str, Any, Any]:
         status_markdown, logs_text = self.snapshot_status()
         camera_frame = self.get_camera_frame(force_refresh=False)
-        return status_markdown, logs_text, camera_frame
+        wrist_frame = self.get_wrist_frame(force_refresh=False)
+        return status_markdown, logs_text, camera_frame, wrist_frame
 
     def launch_task(
         self,

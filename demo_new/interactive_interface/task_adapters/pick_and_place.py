@@ -27,13 +27,27 @@ def execute_pick_and_place(context: TaskExecutionContext) -> dict[str, str]:
     runtime.attach_task_state(state)
     runtime.log("已启动抓取执行链路。")
 
-    start_pnp_system(
-        state,
-        resources.env,
-        resources.rs_env,
-        resources.cam_results,
-        resources.home_T_tcp2base,
-    )
+    wrist_runtime = getattr(resources, "wrist_runtime", None)
+    if wrist_runtime is not None:
+        start_pnp_system(
+            state,
+            resources.env,
+            resources.rs_env,
+            resources.cam_results,
+            resources.home_T_tcp2base,
+            wrist_rs_env=wrist_runtime.wrist_rs_env,
+            graspgen_client=wrist_runtime.graspgen_client,
+            wrist_handeye_config=wrist_runtime.wrist_handeye_config,
+        )
+    else:
+        runtime.log("未启用 GraspGen，使用启发式抓取。")
+        start_pnp_system(
+            state,
+            resources.env,
+            resources.rs_env,
+            resources.cam_results,
+            resources.home_T_tcp2base,
+        )
 
     try:
         run_all_tasks_by_instruction_with_position_description(
