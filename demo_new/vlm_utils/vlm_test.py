@@ -28,8 +28,8 @@ from multi_pointing_vllm_get_point_utils_qwen import *
 
 # INSTRUCTION = "把和罐头放到蓝色盘子里。"
 
-IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果3.png"
-INSTRUCTION = "把所有玩具放到蓝色盘子里，把所有水果放到粉色盘子里。"
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果和文具.png"
+INSTRUCTION = "把所有文具放到文具袋里，把所有玩具放到盘子里。"
 
 TEST_OBJECT_NAME = "eraser"
 TEST_CONTAINER_NAME = "blue plate"

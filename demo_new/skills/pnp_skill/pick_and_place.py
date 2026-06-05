@@ -573,6 +573,15 @@ def _build_pick_pose_bundle(state, target_T, home_T_tcp2base) -> PickPoseBundle:
         lift_y=config.PRE_PICK_Y_OFFSET,
         lift_z=config.PRE_PICK_Z_OFFSET,
     )
+
+    # 预抓取位姿额外增加 20 度俯仰（绕 X 轴），让腕部相机更朝下看
+    pre_pick_extra_rx = np.radians(20.0)
+    Rx_pre = np.array([
+        [1, 0, 0],
+        [0, np.cos(pre_pick_extra_rx), -np.sin(pre_pick_extra_rx)],
+        [0, np.sin(pre_pick_extra_rx), np.cos(pre_pick_extra_rx)]
+    ])
+    pre_pick_T[:3, :3] = Rx_pre @ pre_pick_T[:3, :3]
     post_pick_T = make_lift_T(
         pick_T,
         lift_x=config.POST_PICK_X_OFFSET,

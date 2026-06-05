@@ -21,6 +21,7 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # Global VLM Configuration
 # =========================================================
 
+
 # ER1.5
 BASE_URL = "http://172.28.102.11:22223/v1"
 API_KEY = "EMPTY"
@@ -29,7 +30,7 @@ MODEL_NAME = "Embodied-R1.5-SFT"
 
 """
 # Qwen3.6-35B-A3B
-BASE_URL = "http://172.28.102.11:22002/v1"
+BASE_URL = "http://172.28.102.11:26353/v1"
 API_KEY = "EMPTY"
 MODEL_NAME = "Qwen3.6-35B-A3B"
 """

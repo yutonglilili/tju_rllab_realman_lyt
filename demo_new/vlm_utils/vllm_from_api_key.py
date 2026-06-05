@@ -48,7 +48,7 @@ def _load_default_headers():
 #   $env:VLM_MODEL_NAME = "gpt-4.1-mini"
 #   $env:VLM_DEFAULT_HEADERS = '{"x-foo":"true"}'
 BASE_URL = os.getenv("VLM_BASE_URL", "https://api.gpt.ge/v1")
-API_KEY = os.getenv("VLM_API_KEY", "sk-mZKUlpAwtBBQKHg5B5F62eFe2dE94394A61aF79aCeE68c44")
+API_KEY = os.getenv("VLM_API_KEY", "sk-xAnRuR3KYf693oUP949dAb39941547FdA4E2DfDa0b916dCa")
 MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gpt-5.5")
 DEFAULT_HEADERS = _load_default_headers()
 
