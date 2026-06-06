@@ -15,13 +15,18 @@ from realman.realman_env import pose_tcp2eef
 
 # 移动到目标位姿并夹紧夹爪
 def move_and_close_gripper(env, target_tcp_xyzrpy, gripper_close_value=0.01):
-    action = {
+    # 先移动到目标位姿
+    env.step({
+        "pose": np.asarray(target_tcp_xyzrpy, dtype=float),
+        "motion": "linear",
+    })
+    # 到位后再闭合夹爪
+    env.step({
         "pose": np.asarray(target_tcp_xyzrpy, dtype=float),
         "motion": "linear",
         "gripper": gripper_close_value,
         "wait_gripper": True,
-    }
-    env.step(action)
+    })
     return True
 
 # 移动到目标位姿并松开夹爪

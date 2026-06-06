@@ -2,8 +2,45 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+def _setup_logging() -> None:
+    log_dir = Path(__file__).resolve().parent.parent / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"{timestamp}.log"
+
+    log_file = open(log_path, "a", encoding="utf-8")
+
+    class _Tee:
+        def __init__(self, original, log_file):
+            self._original = original
+            self._log_file = log_file
+
+        def write(self, data):
+            self._original.write(data)
+            self._log_file.write(data)
+            self._log_file.flush()
+
+        def flush(self):
+            self._original.flush()
+            self._log_file.flush()
+
+        def fileno(self):
+            return self._original.fileno()
+
+        def isatty(self):
+            return self._original.isatty()
+
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    print(f"[日志] 输出记录到: {log_path}")
+
+
+_setup_logging()
 
 
 INTERFACE_DIR = Path(__file__).resolve().parent

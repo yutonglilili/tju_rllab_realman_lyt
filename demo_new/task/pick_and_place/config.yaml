@@ -18,7 +18,10 @@ pnp_skill:
   PLACE_SUCCESS_DIST_THRESHOLD: 0.2 # 放置成功距离阈值(米)
 
   # 保存图片目录
-  SAVE_DIR: "/home/lyt/demo/pick_and_place/save_images/"
+  SAVE_DIR: "/home/lyt/tju_rllab_realman_lyt/demo_new/save_images/"
+
+  # 检测失败时保存传入模型的图片（true: 保存, false: 不保存）
+  SAVE_CHECK_FAIL_IMAGE: true
 
   # ═══════════════════════════════════════════════════
   # 规划参数

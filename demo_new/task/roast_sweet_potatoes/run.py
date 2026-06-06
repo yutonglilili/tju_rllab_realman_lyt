@@ -22,6 +22,7 @@ from realman.open3d_realsense_env import Open3dRealsenseEnv
 
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import get_point_vllm
 from demo_new.vlm_utils.vllm_from_api_key import generate_air_fryer_subtasks
+# from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import generate_air_fryer_subtasks
  
 from demo_new.skills.tools.config_utils import resolve_config_path
 from demo_new.skills.tools.utils import make_target_T, make_lift_T
@@ -306,12 +307,14 @@ def execute_subtasks(
 
             minutes = task["args"]["minutes"]
 
+            rotate_angle = minutes * 4.5
+
             set_time(
                 env,
                 rs_env,
                 cam_results,
                 home_T_tcp2base,
-                rotate_angle=minutes
+                rotate_angle=rotate_angle
             )
 
 # =========================================================

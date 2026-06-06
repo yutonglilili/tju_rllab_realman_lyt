@@ -19,7 +19,7 @@ PICK_SUCCESS_DIST_THRESHOLD: 0.1  # 抓取成功距离阈值(米)
 PLACE_SUCCESS_DIST_THRESHOLD: 0.2 # 放置成功距离阈值(米)
 
 # 保存图片目录
-SAVE_DIR: "/home/lyt/demo/pick_and_place/save_images/"
+SAVE_DIR: "/home/lyt/tju_rllab_realman_lyt/demo_new/save_images/"
 
 # ═══════════════════════════════════════════════════
 # 规划参数
@@ -74,6 +74,9 @@ MAX_PLACE_RETRIES: 5               # place 阶段最大重试次数
 # 检测开关（1: 自动化检测, 2: 跳过检测, 3: 人工检测）
 CHECK_PICK_SUCCESS_MODE: 1
 CHECK_PLACE_SUCCESS_MODE: 1
+
+# 检测失败时保存传入模型的图片（true: 保存, false: 不保存）
+SAVE_CHECK_FAIL_IMAGE: true
 
 # 检测裁剪区域大小
 CHECK_PICK_CROP_SIZE: 560

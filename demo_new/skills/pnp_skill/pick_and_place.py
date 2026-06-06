@@ -13,7 +13,9 @@ import sys
 import time
 import threading
 import numpy as np
+import cv2
 import traceback
+from datetime import datetime
 from enum import Enum, auto
 from dataclasses import dataclass
 
@@ -48,6 +50,7 @@ from demo_new.skills.pnp_skill.graspgen_bridge import (
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
     get_point_vllm,
 )
+
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import (
     check_grasp_success_vllm,
     check_place_success_vllm,
@@ -56,6 +59,8 @@ from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import (
     generate_tasks_from_scene,
     generate_tasks_with_descriptions,
 )
+
+# from demo_new.vlm_utils.vllm_from_api_key import generate_tasks_with_descriptions, check_grasp_success_vllm, check_place_success_vllm
 
 # ═══════════════════════════════════════════════════
 # 配置参数
@@ -114,6 +119,7 @@ SKILL_CONFIG_KEYS = (
 )
 OPTIONAL_SKILL_CONFIG_KEYS = (
     "motion_profiles",
+    "SAVE_CHECK_FAIL_IMAGE",
     "GRASPGEN_SERVER_HOST",
     "GRASPGEN_SERVER_PORT",
     "GRASPGEN_TIMEOUT_MS",
@@ -1252,6 +1258,18 @@ def detect_target_movement(state, current_xyz, task_phase):
     state.previous_point_3d = current_xyz.copy()
     return dist > dist_threshold, dist
 
+
+def _save_check_fail_image(image, check_type, object_name, save_dir):
+    """检测失败时保存传入模型的图片。"""
+    os.makedirs(save_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = object_name.replace(" ", "_").replace("/", "_")
+    filename = f"{timestamp}_{check_type}_{safe_name}.png"
+    save_path = os.path.join(save_dir, filename)
+    cv2.imwrite(save_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    return save_path
+
+
 # 结果检测
 def do_check_pick_success(state, env, rs_env, pick_target, point_2d=None, cam_results=None, home_T_tcp2base=None):
     """
@@ -1301,6 +1319,9 @@ def do_check_pick_success(state, env, rs_env, pick_target, point_2d=None, cam_re
             return True
         else:
             print(f"VLM 检测抓取失败，距离检测抓取失败，抓取失败!")
+            if getattr(config, 'SAVE_CHECK_FAIL_IMAGE', False):
+                save_path = _save_check_fail_image(image_for_check, "pick_check", pick_target, config.SAVE_DIR)
+                print(f"[检测] 失败图片已保存: {save_path}")
             return False
 
     elif config.CHECK_PICK_SUCCESS_MODE == 2:
@@ -1356,6 +1377,9 @@ def do_check_place_success(state, rs_env, pick_target, place_target, point_2d=No
             return True
         else:
             print(f"VLM 检测放置失败，距离检测放置失败，放置失败!")
+            if getattr(config, 'SAVE_CHECK_FAIL_IMAGE', False):
+                save_path = _save_check_fail_image(image_for_check, "place_check", f"{pick_target}_to_{place_target}", config.SAVE_DIR)
+                print(f"[检测] 失败图片已保存: {save_path}")
             return False
 
     elif config.CHECK_PLACE_SUCCESS_MODE == 2:
@@ -1992,7 +2016,7 @@ def run_all_tasks_by_instruction_with_list(state, env, rs_env, cam_results, inst
             continue
 
 # 按照带方位描述的指令持续完成任务
-def run_all_tasks_by_instruction_with_position_description(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+def run_all_tasks_by_instruction_with_position_description_with_monitor(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
     """
     1. 调用 vlm 根据长指令拆解出多个 pick 和 place 目标, 目标不只是 object name,还包含方位描述。
     2. 按照目标依次执行pnp任务, 并在完成一组pnp任务后更新目标(将已完成的pnp任务从list中移除, 调整新放的和拿走的物体)
@@ -2036,6 +2060,34 @@ def run_all_tasks_by_instruction_with_position_description(state, env, rs_env, c
             if state.stop_all.is_set():
                 break
             continue
+
+
+def run_all_tasks_by_instruction_with_position_description(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
+    """
+    调用 vlm 根据指令生成 pnp 子任务并一次性执行，不循环检测是否完成。
+    """
+    print(f"[主线程] 🧠 指令: {instruction}")
+
+    config = state.config
+
+    if state.stop_all.is_set():
+        return
+
+    obs = rs_env.step()
+    image_rgb = obs["rgb"]
+
+    try:
+        tasks_list = generate_tasks_with_descriptions(image_rgb, instruction)
+        print(f"tasks_list: {tasks_list}")
+
+        if not tasks_list:
+            print("[主线程] 未生成有效任务。")
+            return
+
+        run_all_tasks(state, env, rs_env, cam_results, tasks_list, home_T_tcp2base)
+
+    except Exception as e:
+        print(f"[主线程] 异常: {e}")
 
 
 # ═══════════════════════════════════════════════════

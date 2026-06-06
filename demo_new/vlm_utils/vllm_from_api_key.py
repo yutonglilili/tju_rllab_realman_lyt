@@ -50,6 +50,7 @@ def _load_default_headers():
 BASE_URL = os.getenv("VLM_BASE_URL", "https://api.gpt.ge/v1")
 API_KEY = os.getenv("VLM_API_KEY", "sk-xAnRuR3KYf693oUP949dAb39941547FdA4E2DfDa0b916dCa")
 MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gpt-5.5")
+# MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gemini-3.5-flash")
 DEFAULT_HEADERS = _load_default_headers()
 
 TMP_IMAGE_PATH = "tmp_vlm_image.png"
@@ -1708,7 +1709,7 @@ def generate_tasks_with_descriptions(image_rgb, instruction):
     response = client.client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
-        max_tokens=512,
+        max_tokens=2048,
         temperature=0.2,
     )
 

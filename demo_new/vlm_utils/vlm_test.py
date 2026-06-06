@@ -11,13 +11,13 @@ import numpy as np
 from PIL import Image
 import cv2
 
-from multi_pointing_vllm_get_point_utils_qwen import *
-# from vllm_from_api_key import *
+# from multi_pointing_vllm_get_point_utils_qwen import *
+from vllm_from_api_key import *
 
 
 # 配置
 # IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/文具和水果.png"
-# IMAGE_PATH = "/home/zhangzhao/lyt/水果和玩具plus.png"
+
 # IMAGE_PATH = "/home/zhangzhao/lyt/方位.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/带遮挡.png"
 # IMAGE_PATH = "/home/zhangzhao/lyt/00004.png"
@@ -28,8 +28,11 @@ from multi_pointing_vllm_get_point_utils_qwen import *
 
 # INSTRUCTION = "把和罐头放到蓝色盘子里。"
 
-IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果和文具.png"
-INSTRUCTION = "把所有文具放到文具袋里，把所有玩具放到盘子里。"
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果6.png"
+INSTRUCTION = "把所有玩具放到蓝色盘子里，把所有水果放到粉色盘子里"
+
+# IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果和文具.png"
+# INSTRUCTION = "把所有文具放到文具袋里，把所有玩具放到盘子里。"
 
 TEST_OBJECT_NAME = "eraser"
 TEST_CONTAINER_NAME = "blue plate"
