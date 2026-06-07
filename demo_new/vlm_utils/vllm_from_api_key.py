@@ -114,6 +114,14 @@ def extract_first_json(text: str):
         flags=re.DOTALL | re.IGNORECASE,
     ).strip()
 
+    # Handle truncated code blocks (opening ``` without closing ```)
+    cleaned = re.sub(
+        r"^```(?:json|python|text)?\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
     parsed = _parse_json_candidate(cleaned)
     if parsed is not None:
         return parsed
@@ -938,7 +946,7 @@ def generate_air_fryer_subtasks(image_rgb, instruction):
     response = client.client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
-        max_tokens=512,
+        max_tokens=2048,
         temperature=0.2,
     )
 

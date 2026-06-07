@@ -109,7 +109,9 @@ SKILL_CONFIG_KEYS = (
     "SAVE_DIR",
 )
 OPTIONAL_SKILL_CONFIG_KEYS = (
+    "ENABLE_GRASPGEN",
     "motion_profiles",
+    "MAX_MOTION_RECOVERY_ATTEMPTS",
     "SAVE_CHECK_FAIL_IMAGE",
     "GRASPGEN_SERVER_HOST",
     "GRASPGEN_SERVER_PORT",
@@ -383,6 +385,7 @@ class SharedState:
 
         # ===== 执行控制 =====
         self.attemp_count = 0
+        self.motion_recovery_count = 0
         self.abort_execution = threading.Event()    # 停止当前执行信号
 
         # ===== 任务结果 =====
@@ -444,6 +447,7 @@ class SharedState:
             self.grasp_plan_source = None
 
             self.attemp_count = 0
+            self.motion_recovery_count = 0
             self.abort_execution.clear()
 
             self.task_done.clear()
@@ -1713,6 +1717,44 @@ def execution_thread(state, env):
 
         print("[执行] ▶️ 开始执行动作序列")
         outcome = _consume_action_list_execution(state, env)
+
+        if outcome == "replan":
+            with state.lock:
+                state.motion_recovery_count += 1
+                recovery_count = state.motion_recovery_count
+                max_recovery = getattr(state.config, 'MAX_MOTION_RECOVERY_ATTEMPTS', 3)
+                current_task = state.current_task
+
+            if recovery_count > max_recovery:
+                print(f"[执行] ⛔ 补救次数已达上限 ({recovery_count-1}/{max_recovery})，任务失败")
+                with state.lock:
+                    state.task_success = False
+                    state.task_done.set()
+                continue
+
+            print(f"[执行] 🔄 触发补救流程 ({recovery_count}/{max_recovery}): 松开夹爪 → reset → 重新感知")
+
+            try:
+                env.step({"gripper": state.config.GRIPPER_OPEN})
+            except Exception as e:
+                print(f"[执行] ⚠️ 补救-松开夹爪异常: {e}")
+
+            try:
+                env.reset()
+            except Exception as e:
+                print(f"[执行] ⚠️ 补救-reset异常: {e}")
+
+            if current_task is not None:
+                pick_target = current_task.get("pick")
+                with state.lock:
+                    _reset_pick_tracking_locked(state, pick_target, attempt_count=0)
+                print("[执行] ✅ 补救完成，已重新开始感知-规划流程")
+            else:
+                print("[执行] ⚠️ 补救时 current_task 为空，任务终止")
+                with state.lock:
+                    state.task_success = False
+                    state.task_done.set()
+            continue
 
         if outcome != "completed":
             continue

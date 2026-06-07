@@ -28,7 +28,8 @@ def execute_pick_and_place(context: TaskExecutionContext) -> dict[str, str]:
     runtime.log("已启动抓取执行链路。")
 
     wrist_runtime = getattr(resources, "wrist_runtime", None)
-    if wrist_runtime is not None:
+    enable_graspgen = getattr(state.config, "ENABLE_GRASPGEN", True)
+    if wrist_runtime is not None and enable_graspgen:
         start_pnp_system(
             state,
             resources.env,
