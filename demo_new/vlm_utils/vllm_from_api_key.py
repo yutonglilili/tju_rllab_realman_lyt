@@ -49,8 +49,8 @@ def _load_default_headers():
 #   $env:VLM_DEFAULT_HEADERS = '{"x-foo":"true"}'
 BASE_URL = os.getenv("VLM_BASE_URL", "https://api.gpt.ge/v1")
 API_KEY = os.getenv("VLM_API_KEY", "sk-xAnRuR3KYf693oUP949dAb39941547FdA4E2DfDa0b916dCa")
-MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gpt-5.5")
-# MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gemini-3.5-flash")
+# MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gpt-5.5")
+MODEL_NAME = os.getenv("VLM_MODEL_NAME", "gemini-3.5-flash")
 DEFAULT_HEADERS = _load_default_headers()
 
 TMP_IMAGE_PATH = "tmp_vlm_image.png"

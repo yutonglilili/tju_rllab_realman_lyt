@@ -1783,7 +1783,7 @@ def generate_tasks_from_scene_with_failure_reason(image_rgb, instruction, failur
 
 
 # 生成带方位描述的 pnp 目标列表
-def generate_tasks_with_descriptions(image_rgb, instruction):
+def generate_tasks_with_descriptions_old_prompt(image_rgb, instruction):
 
     client = get_vlm_client()
     img_path = save_image_tmp(image_rgb)
@@ -1876,6 +1876,132 @@ def generate_tasks_with_descriptions(image_rgb, instruction):
 
     return cleaned_tasks
 
+OBJECT_CATEGORIES = """
+    Category definitions:
+
+    toy:
+    - teddy bear
+    - toy horse
+    - baseball
+    - toy car
+    - toy duck
+
+    fruit:
+    - apple
+    - banana
+    - orange
+    - pear
+
+    stationery:
+    - marker
+    - pen
+    - pencil
+    - glue stick
+    - ruler
+    - eraser
+
+    container:
+    - basket
+    - plate
+    - bowl
+    - tray
+    - bag
+"""
+
+def generate_tasks_with_descriptions(image_rgb, instruction):
+
+    client = get_vlm_client()
+    img_path = save_image_tmp(image_rgb)
+
+    prompt = f"""
+        You are a robot.
+
+        Convert instruction into a list of pick and place tasks.
+
+        Instruction:
+        {instruction}
+
+        Known object categories:
+        {OBJECT_CATEGORIES}
+
+        Rules:
+        - pick = object
+        - place = location
+        - short natural phrases only
+        - If multiple objects need to be moved, output multiple tasks
+        - Each task = one pick + one place
+
+        Output JSON list:
+
+        [
+        {{"pick": "...", "place": "..."}},
+        {{"pick": "...", "place": "..."}}
+        ]
+
+        Examples:
+
+        Instruction: put the ball on the right of the cube
+        [
+        {{"pick": "ball", "place": "right of cube"}}
+        ]
+
+        Instruction: put all balls into the basket
+        [
+        {{"pick": "red ball", "place": "inside basket"}},
+        {{"pick": "blue ball", "place": "inside basket"}}
+        ]
+
+        Instruction: put toys into the white plate
+        [
+        {{"pick": "toy horse", "place": "inside white plate"}},
+        {{"pick": "teddy bear", "place": "inside white plate"}}
+        ]
+
+        Instruction: put the ball between the cup and the plate
+        [
+        {{"pick": "ball", "place": "between cup and plate"}}
+        ]
+    """
+
+    test_case = {
+        "idx": 0,
+        "answer": "",
+        "prompt": prompt,
+        "image": img_path,
+        "video": "",
+        "type": "single_image"
+    }
+
+    messages = client.prepare_messages_from_test_case(test_case)
+
+    data = _request_json_response(
+        client,
+        messages,
+        model=MODEL_NAME,
+        max_tokens=1024,
+        temperature=0.2,
+    )
+
+    tasks = _normalize_task_list(data)
+
+    # -----------------------------
+    # 后处理（关键增强）
+    # -----------------------------
+    cleaned_tasks = []
+    for t in tasks:
+        pick = t.get("pick", "").strip()
+        place = t.get("place", "").strip()
+
+        if pick and place:
+            cleaned_tasks.append({
+                "pick": pick,
+                "place": place
+            })
+
+    if not cleaned_tasks:
+        print("⚠️ No task detected")
+
+    return cleaned_tasks
 
 # =========================================================
 # Check Instruction Completion

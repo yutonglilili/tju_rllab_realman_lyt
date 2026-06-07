@@ -47,20 +47,11 @@ from demo_new.skills.pnp_skill.graspgen_bridge import (
     load_wrist_handeye_config,
 )
 
-from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import (
-    get_point_vllm,
-)
+from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import get_point_vllm
 
-from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import (
-    check_grasp_success_vllm,
-    check_place_success_vllm,
-    generate_task_from_scene,
-    check_instruction_complete,
-    generate_tasks_from_scene,
-    generate_tasks_with_descriptions,
-)
+from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import check_grasp_success_vllm, check_place_success_vllm, generate_tasks_with_descriptions
 
-# from demo_new.vlm_utils.vllm_from_api_key import generate_tasks_with_descriptions, check_grasp_success_vllm, check_place_success_vllm
+# from demo_new.vlm_utils.vllm_from_api_key import generate_tasks_with_descriptions
 
 # ═══════════════════════════════════════════════════
 # 配置参数
@@ -1820,8 +1811,6 @@ def run_single_task(
             state.current_task.pop("_pick_profile", None)
             state.current_task.pop("_place_profile", None)
 
-    env.reset()
-
     if state.task_success:
         return True
     else:
@@ -1854,8 +1843,7 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
         if i + 1 < len(task_list):
             next_task = task_list[i + 1]
 
-            # 在 reset 之前，先设置下一个任务的感知目标
-            # 这样在 reset 的阻塞时间内，感知线程已经在为下一个任务打点
+            # 设置下一个任务的感知目标，直接从 post-place 位置开始下一个任务
             with state.lock:
                 state.task_phase = TaskPhase.PICK
                 _set_tracking_mode_locked(state, True)
@@ -1864,16 +1852,15 @@ def run_all_tasks(state, env, rs_env, cam_results, task_list, home_T_tcp2base):
                 state.is_first_point = True
                 state.previous_point_3d = None
 
-            print("[主线程] 🔄 机械臂 Reset 中（感知线程已提前启动下一任务）...")
-            env.reset()
-        else:
-            print("[主线程] 🔄 最后一个任务完成，Reset...")
-            env.reset()
+            print("[主线程] ➡️ 直接进入下一个任务（跳过 Reset）...")
 
     if state.stop_all.is_set():
         print("\n[主线程] 收到停止信号，结束当前任务循环。")
     else:
         print("\n🎉 所有任务完成!")
+
+    print("[主线程] 🔄 机械臂 Reset...")
+    env.reset()
 
 # 按照模糊指令执行所有任务（一次只输出一组pnp目标）
 def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, home_T_tcp2base):
@@ -1902,6 +1889,7 @@ def run_all_tasks_by_instruction(state, env, rs_env, cam_results, instruction, h
             # 如果发现任务，则执行
             if task:
                 run_single_task(state, env, rs_env, cam_results, task, home_T_tcp2base)
+                env.reset()
                 if state.stop_all.is_set():
                     break
             

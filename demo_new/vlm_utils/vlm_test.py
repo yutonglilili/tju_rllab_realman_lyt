@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image
 import cv2
 
-# from multi_pointing_vllm_get_point_utils_qwen import *
-from vllm_from_api_key import *
+from multi_pointing_vllm_get_point_utils_qwen import *
+# from vllm_from_api_key import *
 
 
 # 配置
