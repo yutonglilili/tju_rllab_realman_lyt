@@ -140,7 +140,8 @@ def build_definition() -> TaskDefinition:
         input_label="输入指令",
         default_instruction="帮我把烤苹果和香蕉，定时20分钟。",
         candidate_instructions=(
-            "帮我烤苹果，定时20分钟。",
+            "帮我烤鸭子，定时20分钟。",
+            "帮我把鸭子从空气炸锅中取出来放到盘子里",
             "帮我烤橘子，定时15分钟。",
         ),
         default_params={},

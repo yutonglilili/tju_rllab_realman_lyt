@@ -22,9 +22,9 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # =========================================================
 
 # ER1.5
-BASE_URL = "http://172.28.102.11:22223/v1"
+BASE_URL = "http://172.28.102.11:22215/v1"
 API_KEY = "EMPTY"
-MODEL_NAME = "Embodied-R1.5-SFT"
+MODEL_NAME = "Embodied-R1.5"
 
 """
 # Qwen3-VL

@@ -88,22 +88,22 @@ pnp_skill:
     inside_air_fryer:
 
       PICK_RPY:
-        - -2.635
-        - -0.215
-        - 1.99
+        - 0.092
+        - 1.266
+        - -3.018
 
       PLACE_RPY:
-        - 0.0623
-        - 0.4881
-        - 3.1218
+        - 0.092
+        - 1.266
+        - -3.018
 
       PRE_PICK_X_OFFSET: 0.02
       PRE_PICK_Y_OFFSET: 0.00
-      PRE_PICK_Z_OFFSET: 0.14
+      PRE_PICK_Z_OFFSET: 0.05
 
       PICK_X_OFFSET: 0.01
       PICK_Y_OFFSET: -0.01
-      PICK_Z_OFFSET: 0.03
+      PICK_Z_OFFSET: 0.00
 
       POST_PICK_X_OFFSET: 0.00
       POST_PICK_Y_OFFSET: 0.00

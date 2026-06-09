@@ -21,19 +21,19 @@ from demo_new.vlm_utils.pointing_vllm_client import VLLMOnlineClient
 # Global VLM Configuration
 # =========================================================
 
-
-# ER1.5
-BASE_URL = "http://172.28.102.11:22223/v1"
-API_KEY = "EMPTY"
-MODEL_NAME = "Embodied-R1.5-SFT"
-
-
 """
+# ER1.5
+BASE_URL = "http://172.28.102.11:22215/v1"
+API_KEY = "EMPTY"
+MODEL_NAME = "Embodied-R1.5"
+"""
+
+
 # Qwen3.6-35B-A3B
 BASE_URL = "http://172.28.102.11:26353/v1"
 API_KEY = "EMPTY"
 MODEL_NAME = "Qwen3.6-35B-A3B"
-"""
+
 
 """
 # Qwen3-VL
@@ -1000,21 +1000,23 @@ def generate_air_fryer_subtasks(image_rgb, instruction):
     5. Before setting timer:
         - drawer must be closed
 
-    6. Multiple food items require multiple pick_and_place actions.
+    6. After all pick_and_place actions involving the air fryer are completed (either putting food in or taking food out), generate Skill 1 to close the drawer. The drawer should not be left open at the end of the task.
 
-    7. Visible objects in the image should be preferred for manipulation.
+    7. Multiple food items require multiple pick_and_place actions.
 
-    8. If a food item mentioned in the instruction is not visible, you may assume it is already inside the air fryer basket unless the image clearly indicates otherwise.
+    8. Visible objects in the image should be preferred for manipulation.
 
-    9. Use this assumption to continue planning normally according to the user instruction.
+    9. If a food item mentioned in the instruction is not visible, you may assume it is already inside the air fryer basket unless the image clearly indicates otherwise.
 
-    10. Do NOT assume the task is already completed unless the image clearly shows the instruction has already been satisfied.
+    10. Use this assumption to continue planning normally according to the user instruction.
 
-    11. Output subtasks in execution order.
+    11. Do NOT assume the task is already completed unless the image clearly shows the instruction has already been satisfied.
 
-    12. Output JSON ONLY.
+    12. Output subtasks in execution order.
 
-    13. Do NOT output explanations.
+    13. Output JSON ONLY.
+
+    14. Do NOT output explanations.
 
     ==================================================
     USER INSTRUCTION

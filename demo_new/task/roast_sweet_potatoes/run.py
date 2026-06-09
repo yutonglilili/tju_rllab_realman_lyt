@@ -299,6 +299,8 @@ def execute_subtasks(
                 config
             )
 
+            env.reset()
+
         # =================================================
         # timer
         # =================================================
@@ -316,6 +318,8 @@ def execute_subtasks(
                 home_T_tcp2base,
                 rotate_angle=rotate_angle
             )
+
+    env.reset()
 
 # =========================================================
 # main
