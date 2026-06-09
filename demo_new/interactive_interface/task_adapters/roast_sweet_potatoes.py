@@ -140,9 +140,8 @@ def build_definition() -> TaskDefinition:
         input_label="输入指令",
         default_instruction="帮我把烤苹果和香蕉，定时20分钟。",
         candidate_instructions=(
-            "帮我把烤苹果和香蕉，定时20分钟。",
-            "帮我把烤苹果，定时15分钟。",
-            "帮我把空气炸锅里的苹果和香蕉取出来放到盘子上。",
+            "帮我烤苹果，定时20分钟。",
+            "帮我烤橘子，定时15分钟。",
         ),
         default_params={},
         execute=execute_roast_task,

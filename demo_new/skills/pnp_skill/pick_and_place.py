@@ -645,7 +645,7 @@ def _build_fallback_pick_action_list(state, pick_T, pre_pick_T, post_pick_T):
             "pose": _matrix_to_tcp_pose(pick_T),
             "gripper": config.GRIPPER_CLOSE,
             "tag": 1,
-            "motion": "pose",
+            "motion": "linear",
             "wait_gripper": True,
         },
         {
@@ -1190,11 +1190,15 @@ def perception_thread(
                         state.plan_ready.clear()
 
                         with state.lock:
+                            was_graspgen = state.grasp_plan_source == "graspgen"
                             _reset_pick_tracking_locked(
                                 state,
                                 current_task["pick"],
                                 attempt_count=attemp_count + 1,
                             )
+                            if was_graspgen:
+                                state.wrist_grasp_enabled = False
+                                print("[感知] ↩️ GraspGen 抓取失败，重试时回退到启发式预设姿态路径")
 
             elif task_phase == TaskPhase.PLACE:
                 
@@ -1803,6 +1807,9 @@ def run_single_task(
     if state.stop_all.is_set():
         return False
 
+    with state.lock:
+        original_wrist_grasp_enabled = state.wrist_grasp_enabled
+
     resolved_pick_profile = _normalize_motion_profile(pick_profile)
     resolved_place_profile = _normalize_motion_profile(place_profile)
 
@@ -1840,6 +1847,9 @@ def run_single_task(
     while not state.stop_all.is_set():
         if state.task_done.wait(timeout=0.1):
             break
+
+    with state.lock:
+        state.wrist_grasp_enabled = original_wrist_grasp_enabled
 
     if not state.task_done.is_set():
         with state.lock:

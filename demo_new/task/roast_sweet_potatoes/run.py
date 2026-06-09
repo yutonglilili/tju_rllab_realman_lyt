@@ -21,8 +21,8 @@ from realman.realman_env import RealmanEnv, T_from_realman_xyzrpy, realman_xyzrp
 from realman.open3d_realsense_env import Open3dRealsenseEnv
 
 from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils import get_point_vllm
-from demo_new.vlm_utils.vllm_from_api_key import generate_air_fryer_subtasks
-# from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import generate_air_fryer_subtasks
+# from demo_new.vlm_utils.vllm_from_api_key import generate_air_fryer_subtasks
+from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import generate_air_fryer_subtasks
  
 from demo_new.skills.tools.config_utils import resolve_config_path
 from demo_new.skills.tools.utils import make_target_T, make_lift_T

@@ -87,8 +87,8 @@ def build_definition() -> TaskDefinition:
         default_instruction="把香蕉放到盘子里。",
         candidate_instructions=(
             "把苹果和橘子放到盘子里。",
-            "把所有水果放到盘子里。",
-            "把魔方放到泰迪熊和玩具马的中间。",
+            "把所有水果放到蓝色盘子里，把所有玩具放到粉色盘子里。",
+            "把鸭子放到魔方的左边。",
         ),
         default_params={},
         execute=execute_pick_and_place,
