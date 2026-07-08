@@ -9,6 +9,16 @@ from interactive_interface.task_adapters.common import (
     clean_instruction,
 )
 
+from demo_new.skills.pnp_skill.pick_and_place import (
+        init_state,
+        start_pnp_system,
+        shutdown_pnp_system,
+    )
+
+from demo_new.task.roast_sweet_potatoes.run import execute_subtasks
+# from demo_new.vlm_utils.vllm_from_api_key import generate_air_fryer_subtasks
+from demo_new.vlm_utils.multi_pointing_vllm_get_point_utils_qwen import generate_air_fryer_subtasks
+
 
 def _ensure_not_stopped(runtime: Any, phase_name: str) -> None:
     if runtime.stop_requested.is_set():
@@ -42,13 +52,6 @@ def _log_subtask(runtime: Any, task: dict[str, Any]) -> None:
 
 
 def execute_roast_task(context: TaskExecutionContext) -> dict[str, Any]:
-    from demo_new.skills.pnp_skill.pick_and_place import (
-        init_state,
-        start_pnp_system,
-        shutdown_pnp_system,
-    )
-    from demo_new.task.roast_sweet_potatoes.run import execute_subtasks
-    from demo_new.vlm_utils.vllm_from_api_key import generate_air_fryer_subtasks
 
     instruction = clean_instruction(context.instruction)
     runtime = context.runtime
@@ -138,11 +141,9 @@ def build_definition() -> TaskDefinition:
         task_id="roast_sweet_potatoes",
         title="Air Fryer Roast",
         input_label="输入指令",
-        default_instruction="帮我把烤苹果和香蕉，定时20分钟。",
+        default_instruction="帮我烤鸭子，定时20分钟。",
         candidate_instructions=(
-            "帮我烤鸭子，定时20分钟。",
             "帮我把鸭子从空气炸锅中取出来放到盘子里",
-            "帮我烤橘子，定时15分钟。",
         ),
         default_params={},
         execute=execute_roast_task,

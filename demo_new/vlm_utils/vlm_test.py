@@ -29,11 +29,13 @@ from multi_pointing_vllm_get_point_utils_qwen import *
 
 # INSTRUCTION = "把和罐头放到蓝色盘子里。"
 
-# IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果6.png"
-# INSTRUCTION = "把所有玩具放到蓝色盘子里，把所有水果放到粉色盘子里"
+"""
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果6.png"
+INSTRUCTION = "把所有玩具放到蓝色盘子里，把所有水果放到粉色盘子里"
+"""
 
-IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/筷子.png"
-INSTRUCTION = "打点到筷子"
+IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/鸭子.png"
+INSTRUCTION = "打点到最大的鸭子"
 
 # IMAGE_PATH = "/home/lyt/tju_rllab_realman_lyt/玩具和水果和文具.png"
 # INSTRUCTION = "把所有文具放到文具袋里，把所有玩具放到盘子里。"
@@ -421,7 +423,7 @@ def test_check_place_success_vllm_multiple(object_name, container_name, image_pa
     print("\n========== DONE ==========\n")
 
 if __name__ == "__main__":
-    #test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
+    # test_generate_tasks_with_descriptions(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     test_get_point_vllm(INSTRUCTION, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)
     # test_generate_air_fryer_subtasks(INSTRUCTION,IMAGE_PATH,SAVE_DIR,NUM_SAMPLES)
     # test_check_grasp_success_vllm_multiple(TEST_OBJECT_NAME, IMAGE_PATH, SAVE_DIR, NUM_SAMPLES)

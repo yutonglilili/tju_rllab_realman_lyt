@@ -1,0 +1,140 @@
+pnp_skill:
+
+  # ═══════════════════════════════════════════════════
+  # GraspGen 总开关（true: 启用精抓取, false: 仅启发式抓取）
+  # ═══════════════════════════════════════════════════
+  ENABLE_GRASPGEN: true
+
+  # ═══════════════════════════════════════════════════
+  # perception
+  # ═══════════════════════════════════════════════════
+
+  PERCEPTION_INTERVAL: 0.3
+
+  TASK_DISCOVERY_INTERVAL: 2.0
+
+  BUFFER_SIZE: 5
+
+  TRIGGER_COUNT_THRESHOLD: 2
+
+  MOVE_OBJECT_THRESHOLD: 0.05
+
+  MOVE_CONTAINER_THRESHOLD: 0.2
+
+  CAMERA_X_OFFSET: 0.01
+
+  CAMERA_Y_OFFSET: -0.02
+
+  CAMERA_Z_OFFSET: 0.0
+
+  PICK_SUCCESS_DIST_THRESHOLD: 0.1
+
+  PLACE_SUCCESS_DIST_THRESHOLD: 0.2
+
+  SAVE_DIR: "/home/lyt/demo/pick_and_place/save_images/"
+
+  # ═══════════════════════════════════════════════════
+  # trajectory
+  # ═══════════════════════════════════════════════════
+
+  TRAJECTORY_DOWNSAMPLE: 2
+
+  SAFE_HEIGHT: 0.06
+
+  # ═══════════════════════════════════════════════════
+  # motion profiles
+  # ═══════════════════════════════════════════════════
+
+  motion_profiles:
+
+    normal:
+
+      PICK_RPY: null
+
+      PLACE_RPY: null
+
+      PRE_PICK_X_OFFSET: 0.0
+      PRE_PICK_Y_OFFSET: 0.04
+      PRE_PICK_Z_OFFSET: 0.08
+
+      PICK_X_OFFSET: 0.0
+      PICK_Y_OFFSET: 0.0
+      PICK_Z_OFFSET: 0.005
+
+      POST_PICK_X_OFFSET: 0.0
+      POST_PICK_Y_OFFSET: 0.04
+      POST_PICK_Z_OFFSET: 0.13
+
+      PRE_PLACE_X_OFFSET: 0.03
+      PRE_PLACE_Y_OFFSET: 0.0
+      PRE_PLACE_Z_OFFSET: 0.1
+
+      PLACE_X_OFFSET: 0.08
+      PLACE_Y_OFFSET: -0.03
+      PLACE_Z_OFFSET: 0.07
+
+      POST_PLACE_X_OFFSET: 0.03
+      POST_PLACE_Y_OFFSET: 0.0
+      POST_PLACE_Z_OFFSET: 0.08
+
+  # ═══════════════════════════════════════════════════
+  # execution
+  # ═══════════════════════════════════════════════════
+
+  CONTROL_INTERVAL: 0.0
+
+  GRIPPER_OPEN: 0.09
+
+  GRIPPER_CLOSE: 0.03
+
+  MAX_CONSECUTIVE_MOTION_FAILURES: 5
+
+  MAX_PICK_RETRIES: 5
+
+  MAX_PLACE_RETRIES: 5
+
+  CHECK_PICK_SUCCESS_MODE: 1
+
+  CHECK_PLACE_SUCCESS_MODE: 1
+
+  CHECK_PICK_CROP_SIZE: 560
+
+  CHECK_PLACE_CROP_SIZE: 640
+
+  # ═══════════════════════════════════════════════════
+  # Wrist GraspGen 参数
+  # ═══════════════════════════════════════════════════
+  GRASPGEN_SERVER_HOST: "127.0.0.1"
+  GRASPGEN_SERVER_PORT: 5556
+  GRASPGEN_TIMEOUT_MS: 60000
+  GRASPGEN_GRASP_THRESHOLD: -1.0
+  GRASPGEN_NUM_GRASPS: 200
+  GRASPGEN_TOPK_NUM_GRASPS: 50
+  GRASPGEN_MAX_CANDIDATES: 5
+  DEBUG_EXIT_AFTER_GRASP_CANDIDATES: false
+  GRASPGEN_CANDIDATE_PREGRASP_OFFSET_M: 0.10
+
+  WRIST_MIN_DEPTH_M: 0.10
+  WRIST_MAX_DEPTH_M: 1.20
+  WRIST_DEPTH_PATCH_RADIUS: 3
+  WRIST_CLICK_SEED_RADIUS_PX: 5
+  WRIST_SEED_SEARCH_RADIUS_PX: 15
+  WRIST_REGION_GROW_NEIGHBOR_RADIUS_PX: 2
+  WRIST_REGION_GROW_3D_THRESHOLD_M: 0.018
+  WRIST_REGION_GROW_DEPTH_THRESHOLD_M: 0.030
+  WRIST_REGION_GROW_COLOR_THRESHOLD: 140.0
+  WRIST_REGION_GROW_MAX_SEED_DISTANCE_M: 0.24
+  WRIST_MIN_MASK_PIXELS: 120
+  WRIST_MASK_KERNEL_SIZE: 3
+  WRIST_TABLE_HEIGHT_PERCENTILE: 8.0
+  WRIST_TABLE_REMOVE_MARGIN_M: 0.008
+  WRIST_MAX_OBJECT_POINTS: 4096
+  WRIST_OBJECT_VOXEL_SIZE: 0.003
+  WRIST_MAX_SCENE_POINTS: 8192
+  WRIST_SCENE_VOXEL_SIZE: 0.004
+
+  GRASPGEN_DIRECTION_RULE_TARGET_DIR_CAMERA: [0.0, 0.64, 0.77]
+  GRASPGEN_DIRECTION_RULE_MAX_ANGLE_DEG: 35.0
+  GRASPGEN_DIRECTION_RULE_MIN_FORWARD_COMPONENT: 0.30
+  GRASPGEN_DIRECTION_RULE_MIN_DOWN_COMPONENT: 0.20
+  GRASPGEN_DIRECTION_RULE_MAX_LATERAL_COMPONENT: 0.45
